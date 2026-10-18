@@ -410,7 +410,14 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_startServerImpl(JNIEnv* env, jobject thi
     }
 
     try {
-        g_server = std::make_unique<usbipdcpp::LibusbServer>();
+        // 默认策略是任何提交失败都断开会话（对齐内核 stub 的悲观处理）；
+        // Android 的 UVC ISO 提交会因带宽/资源问题偶发 LIBUSB_ERROR_IO，
+        // 此时设备仍在：宽松策略只让本次 URB 以 EPIPE 结束，会话继续，
+        // 避免一次瞬时错误把整台设备从客户端踢掉
+        usbipdcpp::LibusbServerConfig config;
+        config.device_handler_config.submit_error_policy =
+                usbipdcpp::LibusbSubmitErrorPolicy::DisconnectOnDeviceGone;
+        g_server = std::make_unique<usbipdcpp::LibusbServer>(config);
         g_server->set_hotplug_enabled(false);
         asio::ip::tcp::endpoint endpoint(asio::ip::tcp::v4(), static_cast<unsigned short>(port));
         // v1.0.8 起 start 不再抛异常，启动失败（如端口被占用）通过返回值报告
