@@ -80,4 +80,14 @@
     <string name="about_version">版本: %1$s</string>
     <string name="about_github">GitHub: yunsmall/Android-Usbipdcpp</string>
     <string name="about_license">许可证: GPL-3.0</string>
+    <string name="about_usbipdcpp">关于 usbipdcpp</string>
+    <string name="settings">设置</string>
+    <string name="more_options">更多选项</string>
+    <string name="auto_bind_remembered_devices">自动重新绑定曾共享的设备</string>
+    <string name="auto_bind_remembered_devices_desc">之前共享过的设备重新插入时，在服务器运行状态下自动弹出系统 USB 权限请求并重新绑定。</string>
+    <string name="usb_permission_denied">已拒绝 USB 权限，本次插入不会自动绑定，可手动点击绑定。</string>
+    <string name="remembered_devices">已记住的设备</string>
+    <string name="no_remembered_devices">暂无记录</string>
+    <string name="clear_all">全部清除</string>
+    <string name="delete">删除</string>
 </resources>

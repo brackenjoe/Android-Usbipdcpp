@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 class UsbService : Service() {
 
@@ -53,6 +54,9 @@ class UsbService : Service() {
         // 停止服务器后保留上次运行值（stopServer 只清运行标志与设备表），
         // 供 UI 显示与重启参考
         val port: Int = DEFAULT_PORT,
+        // 每次成功启动生成的标记（Service 实例 ID + 递增代次）：UI 据此判断
+        // "服务器是否刚启动"，不依赖 UI 自己保存的运行状态
+        val startMarker: String = "",
         // deviceName -> busid，UI 展示 busid 用
         val boundDevices: Map<String, String> = emptyMap()
     )
@@ -69,6 +73,12 @@ class UsbService : Service() {
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
+
+    // Service 实例标识：进程重建后实例变化，供 startMarker 区分"UI 重建"与
+    // "服务重建后的新启动"
+    private val instanceId = UUID.randomUUID().toString()
+    // 同一实例内的启动代次：停服再启递增；只在 serviceNativeContext 串行读写
+    private var startGeneration = 0L
 
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 8)
     val events: SharedFlow<Event> = _events.asSharedFlow()
@@ -97,6 +107,9 @@ class UsbService : Service() {
         val busid: String
     )
     private val activeDevices = mutableMapOf<String, DeviceInfo>()
+
+    // 曾共享设备的历史记录：拔出、停服、进程重启都不清，只有手动解绑才删
+    private val sharedDeviceStore by lazy { SharedDeviceStore(this) }
 
     // onStartCommand 之前 notify 同 ID 通知会先于 startForeground 生效，语义混乱，
     // 这里等前台通知建立后再由状态驱动更新
@@ -261,8 +274,14 @@ class UsbService : Service() {
             if (success) {
                 // 回填 native 返回的实际端口：state 落后于 native（OOM 级更新
                 // 失败使 serverRunning 停在 false 而服务器实际在跑）时本短路口
-                // 不生效，走这里——返回的"已在运行"端口是真实值，显示不错位
-                _state.update { it.copy(serverRunning = true, port = actualPort) }
+                // 不生效，走这里——返回的"已在运行"端口是真实值，显示不错位。
+                // startMarker 在 lambda 外算好：_state.update 的 CAS 重试会
+                // 重复执行 lambda，在里面递增会多算代次
+                startGeneration += 1
+                val marker = "$instanceId:$startGeneration"
+                _state.update {
+                    it.copy(serverRunning = true, port = actualPort, startMarker = marker)
+                }
             }
             success
         }
@@ -335,6 +354,11 @@ class UsbService : Service() {
 
                 when (val result = UsbIpNative.bindUsbDevice(fd, device.vendorId, device.productId)) {
                     is DeviceBindResult.Success -> {
+                        // 绑定成功即记入历史：拔出/停服/重启都保留，重插时可据此恢复。
+                        // 持久化是附属功能：这里抛异常会让登记被跳过、finally 关掉连接，
+                        // 而 native 侧已经绑定，所以失败只记日志
+                        runCatching { sharedDeviceStore.remember(device) }
+                            .onFailure { e -> Log.w(TAG, "remember device history failed", e) }
                         activeDevices[device.deviceName] = DeviceInfo(connection, fd, result.busid)
                         // 登记成功即接管连接所有权（finally 据此决定关不关连接）。
                         // registered 的置位点精确对齐"登记成功"：put 失败（OOM 级）
@@ -383,21 +407,40 @@ class UsbService : Service() {
         }
     }
 
-    suspend fun unbindDevice(deviceName: String): DeviceUnbindResult {
+    // 解绑路径共用的历史记录删除：失败只记日志，不能阻断连接关闭与状态清理
+    private fun forgetHistory(device: UsbDevice) {
+        runCatching { sharedDeviceStore.forgetModel(device.vendorId, device.productId) }
+            .onFailure { e -> Log.w(TAG, "forget device history failed", e) }
+    }
+
+    suspend fun unbindDevice(device: UsbDevice): DeviceUnbindResult {
+        val deviceName = device.deviceName
         // 同 startServer/bindDevice：销毁开始后拒绝（见 destroying 声明处）——
         // 清理线程会把全部设备连根清理，此时的解绑只是重复操作；按幂等成功
         // 上报，与 DeviceNotFound 分支同一语义：目标（连接关、状态清）终将达成
         if (destroying) {
+            // 清理线程正在释放 native 资源，连接与状态不需要再动；但用户这次
+            // 点击仍是解绑意图，历史记录必须删掉（纯 SharedPreferences 操作，
+            // 与 native 清理无冲突）
+            forgetHistory(device)
             return DeviceUnbindResult.Success
         }
         // 同 bindDevice：挂 serviceNativeContext，cleanup 不会被调用方取消打断
         return withContext(serviceNativeContext) {
             // 复查销毁标志：入口检查与本块开始之间主线程可能已置位（同 bindDevice）
             if (destroying) {
+                // 同入口分支：用户这次点击仍是解绑意图
+                forgetHistory(device)
                 return@withContext DeviceUnbindResult.Success
             }
             val info = activeDevices[deviceName]
-                ?: return@withContext DeviceUnbindResult.Failure.DeviceNotFound
+            if (info == null) {
+                // 设备表里已没有它（停服/拔出清理已完成）：连接与状态无需再动，
+                // 但用户这次点击仍是解绑意图，历史记录必须删掉。解绑目标已达成，
+                // 按幂等成功上报，避免"记录已删却提示失败"
+                forgetHistory(device)
+                return@withContext DeviceUnbindResult.Success
+            }
 
             // native 侧已无此设备（如已被拔出清理）时 Kotlin 侧连接和状态同样要清，
             // 否则连接泄漏、UI 一直显示已绑定
@@ -405,6 +448,11 @@ class UsbService : Service() {
                 // 先摘登记再关连接：close 出任何问题都不影响摘除与状态更新，
                 // 否则 UI 永久显示"已绑定"而 native 侧已解绑（closeAllDevices 同款处理）
                 val removed = activeDevices.remove(deviceName)
+                // 用户主动解绑才删历史记录；拔出与停服路径不走这里。
+                // 按设备自身的 VID/PID 删除，不依赖 activeDevices：停服清空设备表后
+                // 用户再点解绑（过渡窗口）时记录仍要被删掉，否则下次启动自动绑定
+                // 会把刚解绑的设备拉回来。删除失败不能跳过后面的连接关闭与状态清理
+                forgetHistory(device)
                 runCatching { removed?.connection?.close() }
                     .onFailure { e -> Log.w(TAG, "close device failed", e) }
                 _state.update { it.copy(boundDevices = it.boundDevices - deviceName) }

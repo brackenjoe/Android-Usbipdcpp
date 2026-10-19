@@ -9,11 +9,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yunsmall.usbipdcpp.R
+import com.yunsmall.usbipdcpp.util.displayName
 
 @Composable
 fun ColumnScope.DeviceListSection(
@@ -21,7 +23,6 @@ fun ColumnScope.DeviceListSection(
     // deviceName -> busid：判绑定与取 busid 用同一份数据，不拆两条参数线
     boundDevices: Map<String, String>,
     busyDevices: Set<String>,
-    serverRunning: Boolean,
     onBindDevice: (UsbDevice) -> Unit,
     onUnbindDevice: (UsbDevice) -> Unit,
     onRefresh: () -> Unit
@@ -78,7 +79,6 @@ fun ColumnScope.DeviceListSection(
                             isBound = isBound,
                             isBusy = busyDevices.contains(device.deviceName),
                             busid = busid,
-                            canBind = serverRunning && !isBound,
                             onBind = { onBindDevice(device) },
                             onUnbind = { onUnbindDevice(device) }
                         )
@@ -95,7 +95,6 @@ fun DeviceItem(
     isBound: Boolean,
     isBusy: Boolean,
     busid: String?,
-    canBind: Boolean,
     onBind: () -> Unit,
     onUnbind: () -> Unit
 ) {
@@ -108,7 +107,7 @@ fun DeviceItem(
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = device.productName?.takeIf { it.isNotEmpty() } ?: stringResource(R.string.unknown_device),
+                text = device.displayName(LocalContext.current),
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -137,7 +136,9 @@ fun DeviceItem(
                 Text(stringResource(R.string.unbind), fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
             }
         } else {
-            Button(onClick = onBind, modifier = Modifier.height(36.dp), enabled = canBind) {
+            // 服务器未运行时按钮保持可点：点击后由 onBindDevice 提示"请先启动
+            // 服务器"；置灰按钮点不动，用户不知道差什么
+            Button(onClick = onBind, modifier = Modifier.height(36.dp)) {
                 Text(stringResource(R.string.bind), fontSize = 12.sp)
             }
         }

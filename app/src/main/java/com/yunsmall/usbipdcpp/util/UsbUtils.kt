@@ -1,7 +1,16 @@
 package com.yunsmall.usbipdcpp.util
 
+import android.content.Context
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
+import com.yunsmall.usbipdcpp.R
+
+/**
+ * 设备展示名：优先产品名，取不到时回退到通用文案。
+ * 手动绑定、解绑、拔出提示与设备列表共用同一条回退规则。
+ */
+fun UsbDevice.displayName(context: Context): String =
+    productName?.takeIf { it.isNotEmpty() } ?: context.getString(R.string.unknown_device)
 
 fun isCameraDevice(device: UsbDevice): Boolean {
     // 视频类有两种声明方式：设备级 class 直接声明（部分 UVC 设备），或接口级
