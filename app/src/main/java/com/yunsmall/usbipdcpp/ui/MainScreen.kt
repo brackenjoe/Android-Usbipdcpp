@@ -1,22 +1,17 @@
 package com.yunsmall.usbipdcpp.ui
 
-import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.net.Uri
 
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -33,12 +28,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.core.os.LocaleListCompat
 import com.yunsmall.usbipdcpp.AppSettings
+import com.yunsmall.usbipdcpp.DialInKey
 import com.yunsmall.usbipdcpp.DeviceBindResult
 import com.yunsmall.usbipdcpp.DeviceUnbindResult
 import com.yunsmall.usbipdcpp.LogCallback
+import com.yunsmall.usbipdcpp.LoopStatus
 import com.yunsmall.usbipdcpp.R
 import com.yunsmall.usbipdcpp.SharedDeviceStore
 import com.yunsmall.usbipdcpp.UsbIpNative
@@ -59,11 +55,6 @@ private const val TAG = "MainActivity"
 
 // 本文件命名约定：deviceName 一律指 UsbDevice.deviceName（系统设备名，各表的
 // 键）；给用户显示的名字（productName）统一叫 displayName
-
-// 相机权限 pending 的陈旧判定阈值：进程被杀后系统对话框可能已消失、授权结果
-// 永远不会投递，saved state 恢复出的 pending 收不到任何复位路径、会一直挡住
-// 相机设备的绑定；超过该时限由用户下一次点击触发接管（见 onBindDevice）
-private const val CAMERA_PENDING_TIMEOUT_MS = 60_000L
 
 // 用 DateTimeFormatter 而非 SimpleDateFormat：后者非线程安全，虽然 addLog 目前
 // 只在主线程调用（native 回调经 mainHandler.post、手动刷新在主线程），但不必给
@@ -101,17 +92,6 @@ fun MainScreen(
     // 在途设备集合（Set 而非单值：允许多台设备同时发起绑定/解绑，逐设备
     // 显示进度并禁用按钮；改成单值会破坏并发语义）
     var busyDevices by remember { mutableStateOf(setOf<String>()) }
-    // 存设备名而非 UsbDevice 对象（非 Parcelable 无法存 SavedState）：
-    // 权限对话框期间系统回收 Activity（如"不保留活动"）后重建时，
-    // remember 状态会丢，rememberSaveable 保证授权回调仍能找到待绑定设备。
-    // 常规路径靠系统投递兜底（跨重建、跨进程恢复都会重新送达），launch 抛异常
-    // 的路径下面已复位；但进程被杀后对话框可能已消失、结果永远不来，恢复出的
-    // pending 会卡住相机设备的绑定，onBindDevice 里用受理时间戳判陈旧接管
-    var pendingBindDeviceName by rememberSaveable { mutableStateOf<String?>(null) }
-    // 受理时间（elapsedRealtime）：只服务于上面的陈旧判定。同一开机内单调，
-    // 进程被杀重建（Bundle 恢复）时基准不变；跨设备重启时任务栈随重启清空，
-    // 不存在跨基准恢复出的旧值
-    var pendingBindSubmittedAt by rememberSaveable { mutableStateOf(0L) }
 
     // Service 的状态是唯一真相源，UI 只观察：不再自己存一份 serverRunning/
     // boundDevices 并在每个变更点手动刷新。Service 未绑定时用空状态占位：
@@ -119,11 +99,18 @@ fun MainScreen(
     // 会在每次重组因新 flow 实例重启收集
     val emptyServiceState = remember { flowOf(UsbService.UiState()) }
     // collectAsState 返回的 State 对象跨重组稳定，委托读取每次都是当前值；
-    // 且 rememberLauncherForActivityResult 的回调经 rememberUpdatedState 转发，
+    // 且权限结果回调经 currentUsbService（rememberUpdatedState）读最新服务，
     // 调用的永远是最新组合的 performBind——两条路都读不到过期的 nativeReady
     val serviceState by (usbService?.state ?: emptyServiceState).collectAsState(UsbService.UiState())
     val serverRunning = serviceState.serverRunning
     val boundDevices = serviceState.boundDevices
+
+    // The dial loops' states
+    val emptyLoops = remember { flowOf(emptyList<LoopStatus>()) }
+    val dialLoops by (usbService?.dialLoops ?: emptyLoops).collectAsState(emptyList())
+    // The dial key: only whether it is present, never its value
+    val keyState by DialInKey.state.collectAsState()
+    val keyProtection by DialInKey.protection.collectAsState()
 
     // 启动成功后回填实际使用的端口；只在运行中回填，否则旋转重建时会把用户
     // 已经输入但还没提交的端口覆盖回默认值（rememberSaveable 就白搭了）
@@ -136,6 +123,8 @@ fun MainScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val appSettings = remember { AppSettings(context) }
+    // The fork's settings (dial-out, loopback), observed so the card follows the service
+    val settingsValues by appSettings.values.collectAsState(initial = appSettings.snapshot())
     val sharedDeviceStore = remember { SharedDeviceStore(context) }
     // 开关初值取持久化设置，变更即时写回
     var autoBindRemembered by rememberSaveable { mutableStateOf(appSettings.autoBindRememberedDevices) }
@@ -166,6 +155,18 @@ fun MainScreen(
     // 执行设备绑定（USB 权限 + native 绑定）。请求受理后记为本次插入已尝试；
     // 未受理（服务未就绪/同设备已有在途请求）不记，下次列表刷新还能再试
     fun performBind(device: UsbDevice, notifyPending: Boolean = true) {
+        // Fork: this build has neither the camera nor the microphone permission, so
+        // a USB video-class device cannot be shared. Said plainly on a tap; the
+        // automatic re-bind just skips it. Checked before the USB permission prompt,
+        // which would be asked for nothing. UsbService.bindDevice refuses it too.
+        if (isCameraDevice(device)) {
+            if (notifyPending) {
+                Toast.makeText(context, context.getString(R.string.usb_camera_unsupported), Toast.LENGTH_LONG).show()
+            } else {
+                Log.i(TAG, "Skipping automatic bind of a video-class device: ${device.deviceName}")
+            }
+            return
+        }
         // 先校验再发请求：服务/native 不可用时不该先把权限对话框弹给用户；
         // bindAfterPermission 里会重新校验（结果可能跨重建抵达）
         if (requireReadyService() == null) {
@@ -231,39 +232,7 @@ fun MainScreen(
             if (device.deviceName in boundDevices || device.deviceName in busyDevices) return@forEach
             if (device.deviceName in autoBindAttempted) return@forEach
             if (!sharedDeviceStore.isRemembered(device)) return@forEach
-            // 相机设备手动路径会先要 CAMERA 权限；自动路径不替用户再弹一个
-            // 运行时权限框，权限未授予时留给手动绑定走完整流程
-            if (isCameraDevice(device) &&
-                ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
-            ) return@forEach
             performBind(device, notifyPending = false)
-        }
-    }
-
-    // 相机权限 pending 的整体复位：设备名与时间戳是同一在途请求状态的两半，
-    // 成对清理，避免陈旧判定读到不配对的半步
-    fun clearPendingCameraBind() {
-        pendingBindDeviceName = null
-        pendingBindSubmittedAt = 0L
-    }
-
-    // 相机权限请求
-    val cameraPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        val deviceName = pendingBindDeviceName ?: return@rememberLauncherForActivityResult
-        clearPendingCameraBind()
-        // Activity 重建后从设备列表重新查找设备对象；授权期间设备被拔掉时给个提示，
-        // 否则用户点完"允许"看起来毫无反应
-        val device = usbManager.deviceList[deviceName] ?: run {
-            Toast.makeText(context, context.getString(R.string.device_unavailable), Toast.LENGTH_SHORT).show()
-            return@rememberLauncherForActivityResult
-        }
-        if (granted) {
-            performBind(device)
-        } else {
-            // 用户主动拒绝相机权限：文案与"设备不可用"区分，避免误导
-            Toast.makeText(context, context.getString(R.string.camera_permission_denied), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -437,10 +406,27 @@ fun MainScreen(
             StatusCard(
                 serverRunning = serverRunning,
                 boundCount = boundDevices.size,
-                ipAddress = ipAddress.value,
+                // Loopback only: the LAN address is not reachable, so offer none to copy
+                ipAddress = if (serviceState.loopbackOnly) null else ipAddress.value,
                 // 显示端口直接取状态源：portText 是输入框草稿（LaunchedEffect
                 // 回填前的过渡帧会短暂偏离实际监听端口）
-                port = serviceState.port
+                port = serviceState.port,
+                loopbackOnly = serviceState.loopbackOnly
+            )
+
+            DialOutCard(
+                settings = settingsValues,
+                loops = dialLoops,
+                serverRunning = serverRunning,
+                loopbackInForce = serviceState.loopbackOnly,
+                onDialOutEnabled = { appSettings.dialOutEnabled = it },
+                onHost = { appSettings.dialHost = it },
+                onPort = { appSettings.dialPort = it },
+                onLoopbackOnly = { appSettings.loopbackOnly = it },
+                keyState = keyState,
+                keyProtection = keyProtection,
+                onSaveKey = { DialInKey.importKey(context, it) },
+                onForgetKey = { DialInKey.forget() }
             )
 
             DeviceListSection(
@@ -457,36 +443,7 @@ fun MainScreen(
                         Toast.makeText(context, context.getString(R.string.service_not_ready), Toast.LENGTH_SHORT).show()
                         return@DeviceListSection
                     }
-                    // 摄像头设备需要先获取 CAMERA 权限
-                    if (isCameraDevice(device) &&
-                        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
-                    ) {
-                        if (pendingBindDeviceName != null) {
-                            // 陈旧判定：进程被杀后系统对话框可能已消失、授权结果
-                            // 永远不会投递，超时视为陈旧，清掉后按新请求继续
-                            if (SystemClock.elapsedRealtime() - pendingBindSubmittedAt > CAMERA_PENDING_TIMEOUT_MS) {
-                                clearPendingCameraBind()
-                            } else {
-                                // 请求在途：忽略新的，防止 pendingBindDeviceName
-                                // 被覆盖导致授权后绑错设备；提示一下，静默忽略
-                                // 会被当成点击没生效
-                                Toast.makeText(context, context.getString(R.string.permission_request_pending), Toast.LENGTH_SHORT).show()
-                                return@DeviceListSection
-                            }
-                        }
-                        pendingBindDeviceName = device.deviceName
-                        pendingBindSubmittedAt = SystemClock.elapsedRealtime()
-                        try {
-                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                        } catch (e: Exception) {
-                            // launch 抛异常不会有任何回调，不复位会让该设备一直
-                            // 卡在"已有待处理请求"（rememberSaveable 跨重建保留）
-                            clearPendingCameraBind()
-                            Log.e(TAG, "Failed to launch camera permission request", e)
-                        }
-                    } else {
-                        performBind(device)
-                    }
+                    performBind(device)
                 },
                 onUnbindDevice = { device ->
                     // 同 onStart：就绪校验走唯一入口 requireReadyService
@@ -559,16 +516,30 @@ fun MainScreen(
             "unknown"
         }
         val githubUrl = "https://github.com/yunsmall/Android-Usbipdcpp"
+        val sourceUrl = "https://github.com/brackenjoe/Android-Usbipdcpp"
+        val usbipdcppUrl = "https://github.com/yunsmall/usbipdcpp"
         AlertDialog(
             onDismissRequest = { showAbout = false },
             title = { Text(stringResource(R.string.about_title)) },
             text = {
-                Column {
+                // The notices make this longer than a small screen: scroll
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     Text(stringResource(R.string.about_description))
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(stringResource(R.string.about_version, version))
                     Text(stringResource(R.string.about_license))
                     Spacer(modifier = Modifier.height(8.dp))
+                    // GPLv3 5(a): the fork's prominent "modified" notice, with the date
+                    Text(stringResource(R.string.about_modified))
+                    // Where this build's source is: the fork, not upstream
+                    TextButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(sourceUrl))
+                            context.startActivity(intent)
+                        }
+                    ) {
+                        Text(stringResource(R.string.about_source_link), color = MaterialTheme.colorScheme.primary)
+                    }
                     TextButton(
                         onClick = {
                             // 无浏览器等场景不能崩：与顶栏"关于 usbipdcpp"同一处理
@@ -579,7 +550,18 @@ fun MainScreen(
                             }
                         }
                     ) {
-                        Text(stringResource(R.string.about_github), color = MaterialTheme.colorScheme.primary)
+                        Text(stringResource(R.string.about_upstream_link), color = MaterialTheme.colorScheme.primary)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    // usbipdcpp's README requires this sentence verbatim in a prominent place
+                    Text(stringResource(R.string.about_attribution))
+                    TextButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(usbipdcppUrl))
+                            context.startActivity(intent)
+                        }
+                    ) {
+                        Text(stringResource(R.string.about_attribution_link), color = MaterialTheme.colorScheme.primary)
                     }
                 }
             },

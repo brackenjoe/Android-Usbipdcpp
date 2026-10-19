@@ -12,11 +12,13 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.yunsmall.usbipdcpp"
+        // Fork identity: a different ID lets this app install beside upstream's.
+        // namespace (R class, JNI symbol names) stays com.yunsmall.usbipdcpp.
+        applicationId = "io.github.brackenjoe.usbipdcpp"
         minSdk = 28
         targetSdk = 36
         versionCode = (project.findProperty("versionCode") as? String)?.toIntOrNull() ?: 1
-        versionName = (project.findProperty("versionName") as? String) ?: "0.0.11"
+        versionName = ((project.findProperty("versionName") as? String) ?: "0.0.11") + "-dialout.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -79,6 +81,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.appcompat)
+    // Fork: the fingerprint prompt. 1.1.0 is the latest stable; 1.4.0 is still alpha
+    implementation(libs.androidx.biometric)
     implementation("com.google.android.material:material:1.11.0")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

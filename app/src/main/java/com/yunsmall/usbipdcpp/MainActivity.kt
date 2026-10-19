@@ -5,13 +5,23 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.hardware.usb.UsbManager
+import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.util.Log
+import android.view.WindowManager
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.yunsmall.usbipdcpp.ui.LockScreen
 import com.yunsmall.usbipdcpp.ui.MainScreen
 import com.yunsmall.usbipdcpp.ui.theme.UsbipdcppTheme
 
@@ -58,9 +68,98 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Fork: the fingerprint gate. The main UI is not composed until a strong
+    // biometric passes, at launch and again after every trip to the background
+    // (onStop sets it, onStart asks). No device-credential fallback and no
+    // CryptoObject: the passing prompt opens the dial key's time window
+    // (DialInKey.KEY_AUTH_WINDOW_S), which is what the key needs. Not saved
+    // across process death on purpose: a restart is locked
+    private var locked by mutableStateOf(true)
+    private var lockMessage by mutableStateOf<String?>(null)
+    private var promptActive = false
+    private var resumed = false
+    private lateinit var biometricPrompt: BiometricPrompt
+    private lateinit var promptInfo: BiometricPrompt.PromptInfo
+
+    // Fork: POST_NOTIFICATIONS is a runtime permission from API 33. Without it the
+    // "Fingerprint needed to reconnect" notification is silently dropped. Registered
+    // as a field, so before the activity is STARTED; asked at most once per process,
+    // and only from the unlocked state (see askForNotificationPermission)
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            Log.i(TAG, "POST_NOTIFICATIONS granted=$granted")
+        }
+    private var notificationPermissionAsked = false
+
+    private fun askForNotificationPermission() {
+        if (locked || notificationPermissionAsked) return
+        if (Build.VERSION.SDK_INT < 33 || notificationPermissionGranted(this)) return
+        if (!AppSettings(this).dialOutEnabled) return
+        notificationPermissionAsked = true
+        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    // FLAG_SECURE while locked and whenever the activity is not in the foreground
+    // (so the recents thumbnail never shows the main UI)
+    private fun applySecureFlag() {
+        if (locked || !resumed) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+    }
+
+    private fun authenticate() {
+        if (promptActive || !locked) return
+        val can = BiometricManager.from(this).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+        if (can != BiometricManager.BIOMETRIC_SUCCESS) {
+            // Fail closed: nothing to unlock with means the app stays locked
+            lockMessage = getString(R.string.lock_unavailable)
+            return
+        }
+        promptActive = true
+        lockMessage = null
+        biometricPrompt.authenticate(promptInfo)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Before super and before any content: the first frame is already secure
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle(getString(R.string.biometric_title))
+            .setSubtitle(getString(R.string.biometric_subtitle))
+            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+            .setNegativeButtonText(getString(R.string.biometric_cancel)) // required without a credential fallback
+            .setConfirmationRequired(false)
+            .build()
+        biometricPrompt = BiometricPrompt(
+            this, ContextCompat.getMainExecutor(this),
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    promptActive = false
+                    lockMessage = null
+                    locked = false
+                    DialInKey.refresh()
+                    applySecureFlag()
+                    askForNotificationPermission()
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    // Always reopen the gate to a retry: the system also cancels a prompt by
+                    // itself (sensor busy), and a stuck flag would leave Unlock dead
+                    promptActive = false
+                    // Our own cancel in onStop is not a result worth showing
+                    if (errorCode == BiometricPrompt.ERROR_CANCELED) return
+                    lockMessage = getString(R.string.lock_not_unlocked, errString)
+                }
+
+                // One bad read: the prompt stays up and lets the user try again
+                override fun onAuthenticationFailed() = Unit
+            }
+        )
 
         permissionManager.registerReceiver()
 
@@ -71,13 +170,45 @@ class MainActivity : AppCompatActivity() {
 
         setContent {
             UsbipdcppTheme {
-                MainScreen(
-                    usbManager = usbManager,
-                    permissionManager = permissionManager,
-                    usbService = usbServiceHolder.value
-                )
+                if (locked) {
+                    LockScreen(message = lockMessage, onUnlock = ::authenticate)
+                } else {
+                    MainScreen(
+                        usbManager = usbManager,
+                        permissionManager = permissionManager,
+                        usbService = usbServiceHolder.value
+                    )
+                }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (locked) authenticate()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        resumed = true
+        applySecureFlag()
+    }
+
+    override fun onPause() {
+        resumed = false
+        applySecureFlag()
+        super.onPause()
+    }
+
+    override fun onStop() {
+        // Back from the background means the fingerprint again
+        locked = true
+        if (promptActive) {
+            biometricPrompt.cancelAuthentication()
+            promptActive = false
+        }
+        applySecureFlag()
+        super.onStop()
     }
 
     override fun onDestroy() {

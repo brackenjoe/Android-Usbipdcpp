@@ -1,0 +1,76 @@
+# usbip-dialin.service: install as /etc/systemd/system/usbip-dialin.service,
+# with usbip_dialin.py in /opt/usbip-dialin/. See README.md beside this file.
+#
+# Accepts a phone's USB/IP connection on the tailnet IPv4, port 3241, and
+# attaches what it offers through vhci_hcd. Root, because the vhci attach file
+# is root-only, with no capabilities at all: every write it makes is to a
+# root-owned file or directory, which needs none. /etc/default/usbip-dialin
+# holds --allow-user; without it the service exits 2.
+#
+# The sandbox leaves it exactly: write /sys/devices/platform/vhci_hcd.0/attach
+# (ProtectKernelTunables makes the rest of /sys read-only), write
+# /run/vhci_hcd (the records `usbip port` reads; kept on stop, because an
+# attached device outlives the service), connect to tailscaled's socket for
+# `tailscale ip` and `tailscale whois`, and IPv4 to and from the tailnet range.
+# Each option was exercised, not read: usbip_dialin_sandbox_probe.py runs in a
+# transient unit with this file's [Service] lines and tries each one.
+#
+# Stopping it never detaches anything: the kernel holds each attached socket,
+# and the phone's TCP close detaches it.
+[Unit]
+Description=usbip-dialin: attach the USB device a phone dials in with over the tailnet
+Wants=tailscaled.service
+After=tailscaled.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+EnvironmentFile=/etc/default/usbip-dialin
+ExecStart=/usr/bin/python3 -I /opt/usbip-dialin/usbip_dialin.py $USBIP_DIALIN_OPTS
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+SyslogIdentifier=usbip-dialin
+RuntimeDirectory=vhci_hcd
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# Measured on systemd 255.4-1ubuntu8.18: ProtectSystem=strict left
+# /run writable and ProtectKernelTunables left /sys writable, here and in the
+# stock systemd-timesyncd, against the man page; ReadOnlyPaths=/sys was
+# ignored the same way. Hypothesis: MountAPIVFS's fallback mounts of /run and
+# /sys displace the read-only entries for the same path (v255
+# src/core/namespace.c, apivfs_table). So /run is made read-only here and
+# /sys one subtree at a time; the attach file is made writable on top.
+ReadOnlyPaths=/run
+ReadOnlyPaths=-/sys/block -/sys/bus -/sys/class -/sys/dev -/sys/devices -/sys/firmware -/sys/fs -/sys/hypervisor -/sys/kernel -/sys/module -/sys/power
+ReadWritePaths=/sys/devices/platform/vhci_hcd.0/attach
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=100.64.0.0/10
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

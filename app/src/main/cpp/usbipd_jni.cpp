@@ -13,6 +13,7 @@
 
 #include "jni_callback_sink.h"
 #include "jni_log_callback.h"
+#include "dial_port_filter.h"
 
 #define LOG_TAG "UsbIpNative"
 
@@ -48,6 +49,15 @@ namespace {
     // 最近一次成功启动的监听端口，-1 表示尚未启动过。供"已运行"分支如实回答
     // 实际端口（调用方不能用入参回填）；停止时不清——running 为 false 时无人读取
     int g_server_port = -1;
+
+    // Fork: source ports the app's own dialer has registered (see
+    // dial_port_filter.h). Its own mutex, never g_server_mutex: the filter runs
+    // on the network thread, and stopServerImpl holds g_server_mutex while
+    // stop() joins that thread. registerDialPort/unregisterDialPort are plain
+    // synchronous JNI calls for the same reason (and because the Kotlin side
+    // calls them from dial threads, not from jniContext, which device binding
+    // can block for seconds). Cleared when the server starts and stops.
+    dialfilter::Registry g_dial_ports;
 
     // 幂等 libusb 初始化，调用方须持有 g_server_mutex。nativeInitImpl 与
     // startServerImpl 共用：init 与启动的其他状态操作落在同一临界区内，
@@ -381,7 +391,7 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_bindUsbDeviceImpl(
 // 返回实际监听端口（成功启动或已在运行时都是当前真实端口），失败返回 -1：
 // 调用方据此回填状态，不用入参推断
 JNIEXPORT jint JNICALL
-Java_com_yunsmall_usbipdcpp_UsbIpNative_startServerImpl(JNIEnv* env, jobject thiz, jint port) {
+Java_com_yunsmall_usbipdcpp_UsbIpNative_startServerImpl(JNIEnv* env, jobject thiz, jint port, jboolean loopback_only) {
 
     // 端口越界直接拒绝：endpoint 内部按 unsigned short 存端口，65536 会回绕成 0
     //（系统随机分配端口），99999 回绕成别的端口，UI 显示与实际监听不一致
@@ -400,7 +410,8 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_startServerImpl(JNIEnv* env, jobject thi
 
     // 日志放在校验与 init 之后：只有真正进入启动流程才发这条，端口非法或
     // 未就绪失败时不产生"即将启动"的误导输出
-    spdlog::info("Starting USB/IP server on port {}", port);
+    spdlog::info("Starting USB/IP server on port {} ({})", port,
+                 loopback_only ? "loopback only" : "all interfaces");
 
     if (g_server_running) {
         // 返回实际监听端口而不是成功布尔：调用方用它回填状态，拿不到这个
@@ -419,7 +430,30 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_startServerImpl(JNIEnv* env, jobject thi
                 usbipdcpp::LibusbSubmitErrorPolicy::DisconnectOnDeviceGone;
         g_server = std::make_unique<usbipdcpp::LibusbServer>(config);
         g_server->set_hotplug_enabled(false);
-        asio::ip::tcp::endpoint endpoint(asio::ip::tcp::v4(), static_cast<unsigned short>(port));
+        // Fork: connection filter, before start() (the library does not support
+        // setting it later). Loopback-only: only the app's own dialer gets in,
+        // once per registered port. All interfaces: network peers pass as in
+        // upstream, but a loopback peer still must be a registered dialer.
+        // NOTE the all-interfaces mode is unprotected against other apps on the
+        // phone reaching the server through the phone's own WiFi address: that
+        // is not loopback, so allow() lets it through. The UI says so.
+        // Stale registrations from before this start are dropped first.
+        g_dial_ports.clear();
+        const bool filter_loopback_only = (loopback_only == JNI_TRUE);
+        g_server->get_server().set_connection_filter([filter_loopback_only](const asio::ip::tcp::endpoint& peer) {
+            return dialfilter::allow(peer, g_dial_ports, filter_loopback_only);
+        });
+        // Fork: loopback only is the default (Kotlin passes the setting), so a
+        // phone on field WiFi does not expose its USB devices; dial-out reaches
+        // the server over 127.0.0.1. The two endpoint constructors differ in
+        // type, hence if/else rather than a ternary.
+        const auto listen_port = static_cast<unsigned short>(port);
+        asio::ip::tcp::endpoint endpoint;
+        if (loopback_only == JNI_TRUE) {
+            endpoint = asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), listen_port);
+        } else {
+            endpoint = asio::ip::tcp::endpoint(asio::ip::tcp::v4(), listen_port);
+        }
         // v1.0.8 起 start 不再抛异常，启动失败（如端口被占用）通过返回值报告
         auto ec = g_server->start(endpoint);
         if (ec) {
@@ -463,6 +497,7 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_stopServerImpl(JNIEnv* env, jobject thiz
         g_server->stop();
         g_server.reset();
         g_server_running = false;
+        g_dial_ports.clear();
 
         spdlog::info("Server stopped successfully");
     } catch (const std::exception& e) {
@@ -470,6 +505,37 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_stopServerImpl(JNIEnv* env, jobject thiz
         spdlog::error("Error stopping server: {}", e.what());
         g_server.reset();
         g_server_running = false;
+        g_dial_ports.clear();
+    }
+}
+
+// Fork: the app's dialer registers the local port it bound on 127.0.0.1 just
+// before it connects to the server, and unregisters it when the connection is
+// not going to be accepted. Plain synchronous calls: no g_server_mutex, no
+// allocation beyond the set node. A bad port is ignored.
+JNIEXPORT void JNICALL
+Java_com_yunsmall_usbipdcpp_UsbIpNative_registerDialPortImpl(JNIEnv* env, jobject thiz, jint port) {
+    if (port < 1 || port > 65535) {
+        return;
+    }
+    try {
+        g_dial_ports.add(static_cast<std::uint16_t>(port));
+    } catch (...) {
+        // bad_alloc: the dialer's connect will be refused, which fails closed
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "registerDialPort threw");
+    }
+}
+
+// Unregistering a port the filter already consumed is a harmless no-op.
+JNIEXPORT void JNICALL
+Java_com_yunsmall_usbipdcpp_UsbIpNative_unregisterDialPortImpl(JNIEnv* env, jobject thiz, jint port) {
+    if (port < 1 || port > 65535) {
+        return;
+    }
+    try {
+        g_dial_ports.remove(static_cast<std::uint16_t>(port));
+    } catch (...) {
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "unregisterDialPort threw");
     }
 }
 

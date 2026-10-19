@@ -1,0 +1,14 @@
+# usbip-dialin: devices a phone attaches through vhci_hcd bind any driver except
+# input and network ones.
+# Linux v6.8: drivers/usb/core/sysfs.c interface_authorized_default_store and
+# interface_authorized_store; message.c:2108 (intf->authorized from
+# HCD_INTF_AUTHORIZED at set_configuration); driver.c:340 (probe refuses an
+# unauthorized interface) and driver.c:552 (usb_driver_claim_interface refuses
+# one); Documentation/usb/authorization.rst (authorize every needed interface,
+# then trigger probing by writing the interface name to /sys/bus/usb/drivers_probe).
+# Rule 1: every vhci root hub starts with its interfaces unauthorized.
+# Rule 2: on a device's bind, /opt/usbip-dialin/usbip_authorize.py authorizes the
+# interfaces that pass its class denylist and its check of every candidate driver
+# (from the kernel's modules.alias tables), then probes those a driver could match.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", KERNEL=="usb[0-9]*", KERNELS=="vhci_hcd.*", ATTR{interface_authorized_default}="0"
+ACTION=="bind", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", KERNEL!="usb[0-9]*", KERNELS=="vhci_hcd.*", RUN+="/usr/bin/python3 -I /opt/usbip-dialin/usbip_authorize.py /sys%p"

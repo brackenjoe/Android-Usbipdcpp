@@ -1,19 +1,26 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample data extraction rules file; uncomment and customize as necessary.
-   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-   for details.
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+   Fork: nothing leaves this app by backup or by transfer to a new phone. The
+   dial host and the remembered devices are settings of this install only.
+   For apps targeting API 31+ android:allowBackup="false" is documented to
+   stop cloud backup but, on devices from some manufacturers, not
+   device-to-device transfer, so <device-transfer> excludes every domain too
+   (developer.android.com/identity/data/autobackup, updated 2026-02-26, and
+   /about/versions/12/backup-restore, updated 2026-10-16).
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
     </device-transfer>
-    -->
 </data-extraction-rules>

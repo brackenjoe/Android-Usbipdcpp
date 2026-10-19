@@ -5,18 +5,28 @@
     <!-- USB权限 -->
     <uses-feature android:name="android.hardware.usb.host" android:required="true" />
 
-    <!-- 摄像头权限（尝试获取 UVC 设备访问） -->
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- Fork: no camera and no microphone permission, and none may be added. A
+         USB video-class device cannot be shared; the app says so. -->
 
     <!-- 网络权限 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Fork: ConnectivityManager, to find the VPN network the dial is bound to.
+         A normal permission, granted at install -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Fork: a partial wake lock while dial-out loops run, so the CPU keeps
+         redialing with the screen off -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Fork: the fingerprint prompt that opens the app and the dial key's window -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- androidx.biometric's own manifest adds USE_FINGERPRINT, which only the
+         pre-API-28 fingerprint path needs; minSdk is 28 -->
+    <uses-permission android:name="android.permission.USE_FINGERPRINT" tools:node="remove" />
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"

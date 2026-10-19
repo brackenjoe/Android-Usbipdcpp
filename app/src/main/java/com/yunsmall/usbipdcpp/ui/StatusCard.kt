@@ -22,7 +22,9 @@ fun StatusCard(
     serverRunning: Boolean,
     boundCount: Int,
     ipAddress: String?,
-    port: Int
+    port: Int,
+    // The listen scope in force (fixed when the server started)
+    loopbackOnly: Boolean
 ) {
     var showCopyMenu by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -64,6 +66,11 @@ fun StatusCard(
                         style = MaterialTheme.typography.titleMedium
                     )
                     if (serverRunning) {
+                        Text(
+                            text = stringResource(if (loopbackOnly) R.string.listening_loopback else R.string.listening_all),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (loopbackOnly) Color.Unspecified else MaterialTheme.colorScheme.error
+                        )
                         ipAddress?.let {
                             Text(
                                 text = stringResource(R.string.address, it, port),

@@ -13,21 +13,32 @@ on:
           - debug
           - release
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build ${{ inputs.build_type }} APK
     runs-on: ubuntu-24.04
+    env:
+      # 让 Gradle 在 setup-java 装好的 JDK 21 里找 daemon 用的 JVM
+      GRADLE_OPTS: -Dorg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64
 
     steps:
       - name: 检出代码（含子模块）
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
+          persist-credentials: false
 
       - name: 设置 JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
-          java-version: '17'
+          # 17 起 Gradle（JAVA_HOME 取列表最后一个，故 17 放后面）；
+          # gradle-daemon-jvm.properties 要求 21 的 daemon，装好以免 Gradle 去下载
+          java-version: |
+            21
+            17
           distribution: 'temurin'
 
       - name: 安装 NDK 29.0.14033849
@@ -38,16 +49,26 @@ jobs:
 
       - name: 设置 vcpkg
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git ~/vcpkg
-          echo "VCPKG_ROOT=$HOME/vcpkg" >> $GITHUB_ENV
+          # 固定在 vcpkg.json 的 builtin-baseline 那个提交（不再跟随 master）：
+          # 先 init 再按提交号浅取，只下载这一个提交
+          VCPKG_COMMIT=$(jq -r '."builtin-baseline"' app/src/main/cpp/vcpkg.json)
+          if ! printf '%s' "$VCPKG_COMMIT" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::vcpkg.json 的 builtin-baseline 不是 40 位十六进制提交号: $VCPKG_COMMIT"
+            exit 1
+          fi
+          git init -q "$HOME/vcpkg"
+          git -C "$HOME/vcpkg" fetch -q --depth 1 https://github.com/microsoft/vcpkg.git "$VCPKG_COMMIT"
+          git -C "$HOME/vcpkg" checkout -q FETCH_HEAD
+          echo "VCPKG_COMMIT=$VCPKG_COMMIT" >> "$GITHUB_ENV"
+          echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
           # manifest 模式（vcpkg.json + CMAKE_TOOLCHAIN_FILE）下依赖走二进制缓存，
           # 默认落在 ~/.cache/vcpkg/archives；显式指定固定目录，缓存路径才可控
           # （~/vcpkg/packages、~/vcpkg/buildtrees 只有经典模式 install 才用，这里是空的）
           mkdir -p "$HOME/vcpkg-binary-cache"
-          echo "VCPKG_DEFAULT_BINARY_CACHE=$HOME/vcpkg-binary-cache" >> $GITHUB_ENV
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$HOME/vcpkg-binary-cache" >> "$GITHUB_ENV"
 
       - name: 缓存 Gradle
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.gradle/caches
@@ -56,12 +77,12 @@ jobs:
           restore-keys: gradle-
 
       - name: 缓存 vcpkg 二进制缓存
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           # 此处配置需与 release.yml、build-check.yml 完全一致，三处共享同一份缓存
           path: ~/vcpkg-binary-cache
-          key: vcpkg-bincache-${{ hashFiles('app/src/main/cpp/vcpkg.json') }}
-          restore-keys: vcpkg-bincache-
+          key: vcpkg-bincache-${{ env.VCPKG_COMMIT }}-${{ hashFiles('app/src/main/cpp/vcpkg.json') }}
+          restore-keys: vcpkg-bincache-${{ env.VCPKG_COMMIT }}-
 
       - name: 安装构建工具（vcpkg libusb 需要 autotools）
         run: sudo apt-get install -y autoconf autoconf-archive automake libtool
@@ -72,7 +93,7 @@ jobs:
           ./gradlew assemble${{ inputs.build_type == 'debug' && 'Debug' || 'Release' }}
 
       - name: 上传 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: usbipdcpp-${{ inputs.build_type }}
           path: app/build/outputs/apk/${{ inputs.build_type }}/*.apk

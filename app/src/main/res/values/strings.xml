@@ -1,8 +1,8 @@
 <resources>
-    <string name="app_name">USB/IP Server</string>
+    <string name="app_name">USB/IP Dial-out</string>
 
     <!-- App Title -->
-    <string name="app_title">USB/IP Server</string>
+    <string name="app_title">USB/IP Dial-out</string>
 
     <!-- Server Control -->
     <string name="server_control">Server Control</string>
@@ -17,6 +17,8 @@
     <string name="server_stopped">Server Stopped</string>
     <string name="address">Address: %1$s:%2$d</string>
     <string name="devices_bound">%1$d device(s) bound</string>
+    <string name="listening_loopback">Listening on 127.0.0.1 only (loopback)</string>
+    <string name="listening_all">Listening on all interfaces: reachable from the network</string>
 
     <!-- Device List -->
     <string name="usb_devices">USB Devices</string>
@@ -41,7 +43,6 @@
     <string name="invalid_port">Port must be between 1 and 65535</string>
     <string name="permission_denied">Permission denied</string>
     <string name="device_unavailable">Device unavailable (may be in use by system)</string>
-    <string name="camera_permission_denied">Camera permission is required to bind this device</string>
     <string name="bind_success">Device bound: %1$s</string>
     <string name="bind_failed">Bind failed: %1$s</string>
     <string name="unbind_success">Device unbound: %1$s</string>
@@ -56,12 +57,69 @@
     <string name="error_get_config_failed">Failed to get configuration descriptor</string>
     <string name="error_claim_interface_failed">Failed to claim interface</string>
     <string name="error_hub_filtered">USB hubs can\'t be exported</string>
+    <string name="usb_camera_unsupported">USB cameras are not supported in this build</string>
     <string name="error_server_not_running">Server not started</string>
     <string name="error_unknown">Unknown error</string>
     <string name="service_not_ready">Service not ready</string>
     <string name="log_copied">Log copied</string>
     <string name="native_init_failed">Native library initialization failed</string>
     <string name="permission_request_pending">Permission request already in progress</string>
+
+    <!-- Dial-out card -->
+    <string name="dialout_title">Dial-out</string>
+    <string name="dialout_summary_off">Off</string>
+    <string name="dialout_summary_on">On: %1$d connection(s) for shared devices</string>
+    <string name="dialout_enable">Dial out to a host</string>
+    <string name="dialout_host">Host</string>
+    <string name="dialout_hint">One connection per shared device, started while the server runs. Host and port are fixed while dial-out is on.</string>
+    <string name="dialout_no_loops">Nothing is shared, so nothing dials</string>
+    <string name="dialout_need_server">Starts when the server is running and a device is shared</string>
+    <string name="collapse">Collapse</string>
+    <string name="loop_line">Connection %1$d: %2$s</string>
+    <string name="loop_connecting">connecting…</string>
+    <string name="loop_connected">connected, %1$s in, %2$s out</string>
+    <string name="loop_waiting">next dial in %1$d s</string>
+    <string name="loop_ending">ending</string>
+    <string name="loop_last_error">Last error: %1$s</string>
+    <string name="loopback_only">Server listens on loopback only (127.0.0.1)</string>
+    <string name="loopback_restart">Applies when the server is next started</string>
+    <string name="loopback_off_warning">Not protected against other apps on this phone. With this off the server listens on every network address, and an app that connects to this phone\'s own WiFi address is let in like any device on the network. Only dial-out\'s own connection is told apart on 127.0.0.1. Keep this on unless a device on the network must connect to the phone.</string>
+    <string name="loopback_on_note">Only the app\'s own dial-out connects to the server. adb forward and other local clients are refused.</string>
+    <string name="notify_blocked_warning">Notifications are off: you will not be told when a reconnect needs your fingerprint.</string>
+    <string name="notify_settings">Notification settings</string>
+
+    <!-- Fork: dial-out key (usbip-dialin auth v1) and the fingerprint gate -->
+    <string name="dialout_no_key">No key: dial-out does not dial</string>
+    <string name="loop_locked">fingerprint needed to reconnect</string>
+    <string name="loop_no_vpn">no VPN, not dialing (retry in %1$d s)</string>
+    <string name="key_title">Key</string>
+    <string name="key_none">No key. Enter it below.</string>
+    <string name="key_present">Key present (%1$s). Never shown again.</string>
+    <string name="key_invalidated">A fingerprint was enrolled, so the key is gone. Re-enter the key.</string>
+    <string name="key_unsupported">Needs Android 11 or newer. Older versions cannot restrict the key to a fingerprint, so no key is stored.</string>
+    <string name="key_hint">The 64 hex characters of the key. It goes into the Android Keystore and works only for 1 hour after your fingerprint, at the moment a connection is made. Connections already up stay up.</string>
+    <string name="key_field">Key (64 hex characters)</string>
+    <string name="key_count">%1$d / 64</string>
+    <string name="key_save">Save key</string>
+    <string name="key_forget">Forget key</string>
+    <string name="key_saved">Key saved (%1$s)</string>
+    <string name="key_saved_fallback">Key saved (%1$s). StrongBox refused it, so it was imported without StrongBox.</string>
+    <string name="key_bad">That is not 64 hex characters</string>
+    <string name="key_failed">The key could not be stored (%1$s)</string>
+    <string name="key_forgotten">Key forgotten</string>
+    <string name="key_prot_strongbox">StrongBox</string>
+    <string name="key_prot_hardware">secure hardware</string>
+    <string name="key_prot_software">software only</string>
+    <string name="key_prot_unknown">protection unknown</string>
+    <string name="notify_fingerprint_needed">Fingerprint needed to reconnect</string>
+    <string name="notify_channel_auth">Fingerprint needed</string>
+    <string name="lock_title">Locked</string>
+    <string name="lock_unlock">Unlock with fingerprint</string>
+    <string name="lock_unavailable">No fingerprint (strong biometric) is enrolled on this phone, so the app cannot be opened. There is no PIN fallback.</string>
+    <string name="lock_not_unlocked">Not unlocked: %1$s</string>
+    <string name="biometric_title">Open the app</string>
+    <string name="biometric_subtitle">Fingerprint only</string>
+    <string name="biometric_cancel">Cancel</string>
 
     <!-- Language -->
     <string name="language">Language</string>
@@ -75,7 +133,7 @@
 
     <!-- About -->
     <string name="about">About</string>
-    <string name="about_title">USB/IP Server</string>
+    <string name="about_title">USB/IP Dial-out</string>
     <string name="about_description">Share USB devices over network using USB/IP protocol.</string>
     <string name="about_version">Version: %1$s</string>
     <string name="about_github">GitHub: yunsmall/Android-Usbipdcpp</string>
@@ -90,4 +148,9 @@
     <string name="no_remembered_devices">No remembered devices</string>
     <string name="clear_all">Clear all</string>
     <string name="delete">Delete</string>
+    <string name="about_attribution">This product uses usbipdcpp (https://github.com/yunsmall/usbipdcpp), licensed under LGPLv3.</string>
+    <string name="about_attribution_link">usbipdcpp on GitHub</string>
+    <string name="about_modified">Modified October 2026 by brackenjoe from yunsmall/Android-Usbipdcpp: authenticated dial-out to a host, loopback-only listening, no camera.</string>
+    <string name="about_source_link">Source: brackenjoe/Android-Usbipdcpp</string>
+    <string name="about_upstream_link">Upstream: yunsmall/Android-Usbipdcpp</string>
 </resources>

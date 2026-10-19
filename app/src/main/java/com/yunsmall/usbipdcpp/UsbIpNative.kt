@@ -12,6 +12,8 @@ import kotlinx.coroutines.withContext
 
 // 本文件三条纪律（细节与理由见各处注释）：
 // 1. 所有 JNI 调用经 jniContext：native 侧串行 + 不可取消
+//    （fork 例外：registerDialPort/unregisterDialPort 是同步直调，只碰
+//    native 侧自己的端口表锁，见两者的注释）
 // 2. 库加载守卫（libraryLoaded）只收在公开方法里，*Impl 不自行判断
 // 3. 公开 suspend 方法自己切到 jniContext，调用方不必记得切
 object UsbIpNative {
@@ -95,8 +97,10 @@ object UsbIpNative {
     private external fun bindUsbDeviceImpl(fd: Int, vendorId: Int, productId: Int, outBusid: Array<String?>): Int
     private external fun unbindUsbDeviceImpl(fd: Int): Int
     private external fun notifyDeviceRemovedImpl(busid: String)
-    private external fun startServerImpl(port: Int): Int
+    private external fun startServerImpl(port: Int, loopbackOnly: Boolean): Int
     private external fun stopServerImpl()
+    private external fun registerDialPortImpl(port: Int)
+    private external fun unregisterDialPortImpl(port: Int)
     private external fun releaseImpl()
 
     // 错误码 - 必须与 JNI 层 usbipd_jni.cpp 中的 ErrorCode 命名空间保持一致
@@ -206,16 +210,43 @@ object UsbIpNative {
     /**
      * 启动服务器。返回实际监听端口：成功启动或已在运行时都是当前真实端口
      *（已在运行时可能是先前启动的原端口，不是本次入参），失败返回 -1——
-     * 调用方回填 state 的 port 必须用它，不能用入参推断
+     * 调用方回填 state 的 port 必须用它，不能用入参推断。
+     * loopbackOnly（fork 新增）：true 时只监听 127.0.0.1，false 时监听所有 IPv4 接口；
+     * 服务器已在运行时本参数不生效（返回的仍是先前启动的端口），调用方自己记
+     * 生效的值
      */
-    suspend fun startServer(port: Int): Int {
+    suspend fun startServer(port: Int, loopbackOnly: Boolean): Int {
         if (!libraryLoaded) return -1
-        return withContext(jniContext) { startServerImpl(port) }
+        return withContext(jniContext) { startServerImpl(port, loopbackOnly) }
     }
 
     suspend fun stopServer() {
         if (!libraryLoaded) return
         withContext(jniContext) { stopServerImpl() }
+    }
+
+    /**
+     * Fork: tell the server's connection filter that a connection from
+     * 127.0.0.1:[port] is the app's own dialer, good for one accept. Called by
+     * [DialOut] from its dial threads, after it bound the port and before it
+     * connects. Deliberately NOT through [jniContext]: that executor is
+     * single-threaded and device binding can hold it for seconds, and a
+     * registration queued behind it would make the dial fail. Native side takes
+     * only the registry's own mutex, never the server's. Library unavailable:
+     * ignored (there is no server to refuse the dial either).
+     */
+    fun registerDialPort(port: Int) {
+        if (libraryLoaded) registerDialPortImpl(port)
+    }
+
+    /**
+     * Fork: withdraw a registration. Called before the dialer's socket is
+     * closed, on every path where the connection will not be accepted; for a
+     * port the filter already consumed it does nothing. Synchronous, like
+     * [registerDialPort].
+     */
+    fun unregisterDialPort(port: Int) {
+        if (libraryLoaded) unregisterDialPortImpl(port)
     }
 
     suspend fun release() {

@@ -11,6 +11,25 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
+import androidx.core.content.ContextCompat
+
+/**
+ * What to do with a USB permission broadcast. [granted] comes from the system's
+ * own record ([hasPermission]), never from the broadcast's extra: another app
+ * cannot reach the receiver, but nothing here depends on that.
+ * [claimMismatch]: the broadcast claimed something else. A check that throws
+ * counts as not granted.
+ */
+data class PermissionDecision(val granted: Boolean, val claimMismatch: Boolean)
+
+fun decidePermissionResult(claimedGranted: Boolean, hasPermission: () -> Boolean): PermissionDecision {
+    val actual = try {
+        hasPermission()
+    } catch (e: Exception) {
+        false
+    }
+    return PermissionDecision(granted = actual, claimMismatch = claimedGranted != actual)
+}
 
 /**
  * USB 权限受理与设备列表变化的统一入口。
@@ -29,7 +48,7 @@ class UsbPermissionManager(
         // 避免将来新增的 broadcast PendingIntent（默认 requestCode 也是 0）被合并
         private const val PERMISSION_REQUEST_CODE = 1001
         // 待处理登记的陈旧窗口：结果若被系统吞掉永不投递，超时后允许对该设备
-        // 重新发起；与相机权限的陈旧判定阈值对齐
+        // 重新发起
         private const val PERMISSION_PENDING_TIMEOUT_MS = 60_000L
     }
 
@@ -50,7 +69,7 @@ class UsbPermissionManager(
     // 结果到达或拔出时移除。只存设备名不存回调：USB 权限对话框打开期间
     // Activity 可能重建，回调随旧组合作废；结果改由 onPermissionResult 交给
     // 重建后的新监听器。记时刻用于陈旧判定：结果若被系统吞掉永不投递，
-    // 条目会永久挡住该设备（原理同相机权限的 CAMERA_PENDING_TIMEOUT_MS）
+    // 条目会永久挡住该设备
     private val pendingDevices = mutableMapOf<String, Long>()
     // 监听器只在主线程读写（组合与广播 onReceive 都在主线程），无需加锁
     private var onDeviceListChanged: (() -> Unit)? = null
@@ -95,11 +114,18 @@ class UsbPermissionManager(
                         intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     }
 
-                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                    val claimed = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
 
                     // 系统权限结果必带 EXTRA_DEVICE；缺失属非常规实现，忽略即可——
                     // 该设备名的 pending 登记由超时窗口放行重试
                     device?.let { usbDevice ->
+                        // Fork: the extra is only a claim; what counts is whether the
+                        // system holds the permission for this device now
+                        val decision = decidePermissionResult(claimed) { usbManager.hasPermission(usbDevice) }
+                        val granted = decision.granted
+                        if (decision.claimMismatch) {
+                            Log.w(TAG, "Permission broadcast claims $claimed for ${usbDevice.deviceName}, system says ${decision.granted}")
+                        }
                         Log.d(TAG, "USB permission result for ${usbDevice.deviceName}: $granted")
                         // 锁内只改登记表，锁外交付结果：监听器可能再次发起权限
                         // 请求，锁内同步执行用户代码（锁不可重入）有死锁风险
@@ -151,14 +177,12 @@ class UsbPermissionManager(
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // RECEIVER_NOT_EXPORTED 只拦"其他应用"发来的广播：系统（system uid）
-            // 的插拔广播不受影响，权限结果广播经 PendingIntent 以本应用身份投递
-            //（AMS 对同 uid 放行），两条来源都照收；显式导出反而给伪造广播留口
-            context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            context.registerReceiver(usbReceiver, filter)
-        }
+        // RECEIVER_NOT_EXPORTED 只拦"其他应用"发来的广播：系统（system uid）
+        // 的插拔广播不受影响，权限结果广播经 PendingIntent 以本应用身份投递
+        //（AMS 对同 uid 放行），两条来源都照收；显式导出反而给伪造广播留口。
+        // Fork: on every API level. ContextCompat does it below API 33 with a
+        // signature permission of the app's own (androidx merges it into the manifest)
+        ContextCompat.registerReceiver(context, usbReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     fun unregisterReceiver() {

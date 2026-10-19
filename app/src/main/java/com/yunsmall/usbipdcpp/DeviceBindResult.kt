@@ -18,6 +18,7 @@ sealed class DeviceBindResult {
         object GetConfigFailed : Failure()
         object ClaimInterfaceFailed : Failure()
         object HubFiltered : Failure()
+        object CameraUnsupported : Failure()
         object ServerNotRunning : Failure()
         object UnknownError : Failure()
 
@@ -29,6 +30,7 @@ sealed class DeviceBindResult {
             GetConfigFailed -> context.getString(R.string.error_get_config_failed)
             ClaimInterfaceFailed -> context.getString(R.string.error_claim_interface_failed)
             HubFiltered -> context.getString(R.string.error_hub_filtered)
+            CameraUnsupported -> context.getString(R.string.usb_camera_unsupported)
             ServerNotRunning -> context.getString(R.string.error_server_not_running)
             UnknownError -> context.getString(R.string.error_unknown)
         }

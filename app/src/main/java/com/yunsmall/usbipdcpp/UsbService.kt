@@ -3,6 +3,7 @@ package com.yunsmall.usbipdcpp
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -15,8 +16,12 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
+import androidx.core.content.ContextCompat
+import com.yunsmall.usbipdcpp.util.isCameraDevice
 import androidx.core.app.NotificationCompat
+import android.annotation.SuppressLint
 import kotlin.concurrent.thread
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -29,6 +34,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -40,6 +48,9 @@ class UsbService : Service() {
         private const val TAG = "UsbService"
         private const val NOTIFICATION_CHANNEL_ID = "usbipd_service"
         private const val NOTIFICATION_ID = 1
+        // Fork: "fingerprint needed to reconnect", while a dial loop waits for the key's window.
+        // The channel id, AUTH_CHANNEL_ID, is in NotificationCheck.kt (the UI checks it too)
+        private const val AUTH_NOTIFICATION_ID = 2
         // 默认监听端口：端口输入框的初值也取这里，避免两处各写一份字面量
         const val DEFAULT_PORT = 3240
     }
@@ -57,6 +68,10 @@ class UsbService : Service() {
         // 每次成功启动生成的标记（Service 实例 ID + 递增代次）：UI 据此判断
         // "服务器是否刚启动"，不依赖 UI 自己保存的运行状态
         val startMarker: String = "",
+        // 服务器启动时实际生效的监听范围（fork 新增）：true 只监听 127.0.0.1。
+        // 取启动那一刻的设置值而非当前设置——设置改了要重启服务器才生效，UI
+        // 显示的必须是实际状态
+        val loopbackOnly: Boolean = true,
         // deviceName -> busid，UI 展示 busid 用
         val boundDevices: Map<String, String> = emptyMap()
     )
@@ -80,6 +95,11 @@ class UsbService : Service() {
     // 同一实例内的启动代次：停服再启递增；只在 serviceNativeContext 串行读写
     private var startGeneration = 0L
 
+    // 拨出各循环的状态（fork 新增）：与 UiState 分开发布——字节计数约每 0.5 秒
+    // 刷新一次，混进 UiState 会让整个界面和通知跟着重组/重发
+    private val _dialLoops = MutableStateFlow<List<LoopStatus>>(emptyList())
+    val dialLoops: StateFlow<List<LoopStatus>> = _dialLoops.asStateFlow()
+
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 8)
     val events: SharedFlow<Event> = _events.asSharedFlow()
 
@@ -98,6 +118,18 @@ class UsbService : Service() {
     private val serviceNativeContext = UsbIpNative.jniContext
 
     private val binder = UsbBinder()
+
+    // ==================== 拨出（fork 新增，见 DialOut） ====================
+    // dialOut 与 dialInstances 的写入都在 dialLock 内；dialBusy 只在主线程读写
+    private val dialLock = Any()
+    private var dialOut: DialOut? = null
+    // 每个拨出实例当前是否还有线程（含正在收尾的）：任一为 true 就要持有唤醒锁。
+    // 实例被替换后旧实例的线程还会跑一小会儿，所以按实例记，不按"当前实例"算
+    private val dialBusy = mutableMapOf<DialOut, Boolean>()
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    // fork 的设置：UI 写、服务读，同一份 SharedPreferences
+    private val settings by lazy { AppSettings(this) }
 
     // 保存活跃的USB连接。只在 nativeDispatcher 线程读写（与 native 调用同一临界区），
     // 对外的绑定状态经 _state 发布，所以这里用普通 map 即可
@@ -149,7 +181,9 @@ class UsbService : Service() {
     init {
         // 状态变化的唯一出口：通知栏文案跟着 _state 走，不用在每个变更点手写刷新
         serviceScope.launch {
-            state.collect { if (notificationStarted) updateNotification() }
+            // 通知文案只取决于 serverRunning：只在它变化时刷新
+            state.map { it.serverRunning }.distinctUntilChanged()
+                .collect { if (notificationStarted) updateNotification() }
         }
     }
 
@@ -165,14 +199,12 @@ class UsbService : Service() {
             }
         }
 
+        startDialOutController()
+
         val filter = IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // 系统广播不受 RECEIVER_NOT_EXPORTED 限制（其只拦其他应用来源），
-            // 导出反而给伪造"设备拔出"的广播留口
-            registerReceiver(deviceDetachedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(deviceDetachedReceiver, filter)
-        }
+        // 系统广播不受 RECEIVER_NOT_EXPORTED 限制（其只拦其他应用来源），
+        // 导出反而给伪造"设备拔出"的广播留口。Fork: on every API level
+        ContextCompat.registerReceiver(this, deviceDetachedReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -187,6 +219,9 @@ class UsbService : Service() {
         // 置位要尽早：清理线程还在排队等待在途 native 调用期间，迟到的
         // bindDevice 仍可能被成功受理
         destroying = true
+        // 拨出先停：关闭全部 socket、结束全部线程（不阻塞），并释放唤醒锁
+        stopDialOutForDestroy()
+        updateAuthNotification(false)
         try {
             unregisterReceiver(deviceDetachedReceiver)
         } catch (e: Exception) {
@@ -269,7 +304,8 @@ class UsbService : Service() {
                 return@withContext state.value.port == port
             }
 
-            val actualPort = UsbIpNative.startServer(port)
+            val loopbackOnly = settings.loopbackOnly
+            val actualPort = UsbIpNative.startServer(port, loopbackOnly)
             val success = actualPort >= 0
             if (success) {
                 // 回填 native 返回的实际端口：state 落后于 native（OOM 级更新
@@ -280,7 +316,12 @@ class UsbService : Service() {
                 startGeneration += 1
                 val marker = "$instanceId:$startGeneration"
                 _state.update {
-                    it.copy(serverRunning = true, port = actualPort, startMarker = marker)
+                    it.copy(
+                        serverRunning = true,
+                        port = actualPort,
+                        loopbackOnly = loopbackOnly,
+                        startMarker = marker
+                    )
                 }
             }
             success
@@ -318,6 +359,12 @@ class UsbService : Service() {
         if (destroying) {
             return DeviceBindResult.Failure.ServerNotRunning
         }
+        // Fork: no camera permission in this build, so a video-class device is never
+        // bound, whichever path got here (a tap, the automatic re-bind of a
+        // remembered device, a permission result arriving after a recreation)
+        if (isCameraDevice(device)) {
+            return DeviceBindResult.Failure.CameraUnsupported
+        }
         // 整个方法体在 native 线程：设备表读写必须与 native 调用同临界区。
         // 上下文不可取消（见 serviceNativeContext）：绑定与登记必然一起完成或一起
         // 不发生，不存在"native 已绑定而 Kotlin 没登记"的孤儿；调用方被取消只影响
@@ -334,20 +381,29 @@ class UsbService : Service() {
                 return@withContext DeviceBindResult.Failure.DeviceInUse
             }
 
-            val connection = usbManager.openDevice(device)
-            if (connection == null) {
-                return@withContext DeviceBindResult.Failure.DeviceOpenFailed
-            }
-
             // 成功登记后连接归 activeDevices 管，其余路径（含异常）统一由 finally 关闭：
-            // 绑定失败或抛异常时没有登记，留着连接就是 fd 泄漏
+            // 绑定失败或抛异常时没有登记，留着连接就是 fd 泄漏。
+            // Fork: openDevice is inside the try. It throws
+            // SecurityException when the system holds no permission for the device
+            // (a permission revoked, or never granted), which must not crash the app
+            var connection: UsbDeviceConnection? = null
             var registered = false
             try {
+                val opened = try {
+                    usbManager.openDevice(device)
+                } catch (e: SecurityException) {
+                    Log.w(TAG, "openDevice refused (no permission): ${device.deviceName}")
+                    return@withContext DeviceBindResult.Failure.DeviceOpenFailed
+                }
+                if (opened == null) {
+                    return@withContext DeviceBindResult.Failure.DeviceOpenFailed
+                }
+                connection = opened
                 // fd < 0 实际不会出现（openDevice 成功后必有 fd），防御在此：
                 // 返回失败，连接由 finally 统一关闭
                 // getFileDescriptor 是公开 SDK API（API 12 起），返回 int（原始
                 // fd，不是 FileDescriptor 对象），非隐藏 API，不需要反射兜底
-                val fd = connection.fileDescriptor
+                val fd = opened.fileDescriptor
                 if (fd < 0) {
                     return@withContext DeviceBindResult.Failure.DeviceOpenFailed
                 }
@@ -359,7 +415,7 @@ class UsbService : Service() {
                         // 而 native 侧已经绑定，所以失败只记日志
                         runCatching { sharedDeviceStore.remember(device) }
                             .onFailure { e -> Log.w(TAG, "remember device history failed", e) }
-                        activeDevices[device.deviceName] = DeviceInfo(connection, fd, result.busid)
+                        activeDevices[device.deviceName] = DeviceInfo(opened, fd, result.busid)
                         // 登记成功即接管连接所有权（finally 据此决定关不关连接）。
                         // registered 的置位点精确对齐"登记成功"：put 失败（OOM 级）
                         // 时仍为 false，finally 关掉未登记的连接（native 侧此时已
@@ -400,7 +456,7 @@ class UsbService : Service() {
                 if (!registered) {
                     // close 兜异常：释放失败只记日志——让它从 finally 抛出会
                     // 变成协程未捕获异常（调用方 scope 无兜底，App 直接崩）
-                    runCatching { connection.close() }
+                    runCatching { connection?.close() }
                         .onFailure { e -> Log.w(TAG, "close device failed", e) }
                 }
             }
@@ -555,8 +611,160 @@ class UsbService : Service() {
         Log.i(TAG, "All devices closed")
     }
 
+    /**
+     * 拨出的唯一驱动：服务器运行中 + 设置开启 + 主机有效时，持有一个 [DialOut]，
+     * 其循环数跟随已绑定设备数（0 台则不拨）；条件不满足或配置变了就停掉重建。
+     * 触发源：服务器启停、绑定数变化、拨出设置变化。
+     */
+    private fun startDialOutController() {
+        val inputs = combine(
+            state.map { Triple(it.serverRunning, it.port, it.boundDevices.size) }.distinctUntilChanged(),
+            settings.values.map { Triple(it.dialOutEnabled, it.dialHost, it.dialPort) }.distinctUntilChanged(),
+            // No key, no dialing: a missing, invalidated or unsupported key all stop it
+            DialInKey.state.map { it == DialInKey.State.PRESENT }.distinctUntilChanged()
+        ) { server, dial, keyPresent -> Triple(server, dial, keyPresent) }
+        serviceScope.launch {
+            inputs.collect { (server, dial, keyPresent) ->
+                val (running, localPort, deviceCount) = server
+                val (enabled, host, port) = dial
+                // 套接字操作与线程创建不放主线程；applyDialTarget 自带 dialLock
+                withContext(Dispatchers.IO) {
+                    val usable = dialTargetUsable(running, enabled, host, port, keyPresent)
+                    applyDialTarget(if (usable) DialTarget(host, port, localPort) else null, deviceCount)
+                }
+            }
+        }
+    }
+
+    // The server's connection filter only admits dial-out's registered ports
+    private val nativeDialPorts = object : DialPortRegistrar {
+        override fun register(port: Int) = UsbIpNative.registerDialPort(port)
+        override fun unregister(port: Int) = UsbIpNative.unregisterDialPort(port)
+    }
+
+    private data class DialTarget(val host: String, val port: Int, val localPort: Int)
+
+    private fun applyDialTarget(target: DialTarget?, deviceCount: Int) {
+        synchronized(dialLock) {
+            if (destroying) return
+            val current = dialOut
+            if (current != null &&
+                (target == null || current.host != target.host || current.port != target.port ||
+                    current.localPort != target.localPort)
+            ) {
+                // 停掉旧实例：它的线程随后自行收尾，观察协程等到它清空后退出
+                current.stop()
+                dialOut = null
+                _dialLoops.value = emptyList()
+                Log.i(TAG, "Dial-out stopped")
+            }
+            if (target == null) return
+            val dial = dialOut ?: DialOut(
+                host = target.host,
+                port = target.port,
+                localPort = target.localPort,
+                registrar = nativeDialPorts,
+                authenticator = DialInKey.authenticator,
+                vpn = AndroidVpnNetworkProvider(this),
+                log = { Log.i(TAG, "dial-out: $it") }
+            ).also {
+                dialOut = it
+                Log.i(TAG, "Dial-out to ${target.host}:${target.port}, local server port ${target.localPort}")
+                observeDialOut(it)
+            }
+            dial.setLoopCount(deviceCount)
+        }
+    }
+
+    // 把一个 DialOut 的循环状态转给 UI，并据此维护唤醒锁。实例停止且线程清空后退出。
+    // 在 serviceScope（主线程）上收集：dialBusy 与唤醒锁都只在主线程动
+    private fun observeDialOut(dial: DialOut) {
+        serviceScope.launch {
+            dial.loopStatuses.collect { list ->
+                dialBusy[dial] = list.isNotEmpty()
+                if (synchronized(dialLock) { dialOut === dial }) {
+                    _dialLoops.value = list
+                    updateAuthNotification(list.any { it.phase == LoopStatus.Phase.LOCKED })
+                } else if (list.isEmpty()) {
+                    // The replaced instance is gone; the current one decides the notification
+                    if (synchronized(dialLock) { dialOut == null }) updateAuthNotification(false)
+                }
+                updateWakeLock()
+                if (dial.isStopped && list.isEmpty()) {
+                    dialBusy.remove(dial)
+                    updateWakeLock()
+                    cancel()
+                }
+            }
+        }
+    }
+
+    // 有任何拨出循环存在就持有、没有就释放。不设超时：释放由"循环清空"和
+    // onDestroy 保证，带超时反而会在长时间拨出中悄悄失效
+    @SuppressLint("WakelockTimeout")
+    private fun updateWakeLock() {
+        val need = dialBusy.values.any { it }
+        val held = wakeLock?.isHeld == true
+        if (need && !held) {
+            val lock = wakeLock ?: (getSystemService(Context.POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "usbipdcpp:dialout")
+                .apply { setReferenceCounted(false) }
+                .also { wakeLock = it }
+            lock.acquire()
+            Log.i(TAG, "Wake lock held")
+        } else if (!need && held) {
+            wakeLock?.release()
+            Log.i(TAG, "Wake lock released")
+        }
+    }
+
+    private fun stopDialOutForDestroy() {
+        synchronized(dialLock) {
+            dialOut?.stop()
+            dialOut = null
+        }
+        runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
+            .onFailure { e -> Log.w(TAG, "wake lock release failed", e) }
+    }
+
+    // Posted while any loop is LOCKED (the key's window after the fingerprint is
+    // over, so nothing is dialed); cleared when none is. Opening the app and
+    // passing the fingerprint prompt opens the window, and the loops notice by
+    // themselves within DialOut.LOCKED_PROBE_MS. Main thread only
+    private var authNotified = false
+
+    private fun updateAuthNotification(needed: Boolean) {
+        if (needed == authNotified) return
+        authNotified = needed
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (!needed) {
+            manager.cancel(AUTH_NOTIFICATION_ID)
+            return
+        }
+        val open = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        manager.notify(
+            AUTH_NOTIFICATION_ID,
+            NotificationCompat.Builder(this, AUTH_CHANNEL_ID)
+                .setContentTitle(getString(R.string.app_name))
+                .setContentText(getString(R.string.notify_fingerprint_needed))
+                .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .build()
+        )
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            getSystemService(NotificationManager::class.java).createNotificationChannel(
+                NotificationChannel(AUTH_CHANNEL_ID, getString(R.string.notify_channel_auth), NotificationManager.IMPORTANCE_DEFAULT)
+            )
             val channel = NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
                 "USB/IP Service",

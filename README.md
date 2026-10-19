@@ -2,6 +2,87 @@
 
 [中文](README.zh.md)
 
+## About this fork
+
+This is a fork of [yunsmall/Android-Usbipdcpp](https://github.com/yunsmall/Android-Usbipdcpp),
+modified in October 2026 by brackenjoe. The upstream maintainer declined a
+dial-out mode as out of scope for a server
+([#2](https://github.com/yunsmall/Android-Usbipdcpp/issues/2)) and welcomed a
+fork; this fork adds it in the app only. The usbipdcpp library is unchanged.
+
+What the fork adds:
+
+- **Dial-out.** The app connects out to a host you name (host and port) and
+  forwards bytes between that connection and its own USB/IP server on
+  `127.0.0.1`, one connection per shared device. Use it when the host
+  cannot connect to the phone (behind NAT, on mobile data) or must not
+  (policy), for example over a Tailscale network. It dials only over a VPN
+  (any app that Android reports as a VPN): with no VPN up, it does not
+  dial. It redials 1 s after a connection that authenticated and reached
+  the local server, and backs off from 1 s to 30 s after any other; while
+  it waits for a fingerprint it checks again every 5 s.
+- **Authentication, both ways, before any USB/IP byte**, with a 32-byte key
+  shared with the host (the protocol is in
+  [`linux/usbip-dialin/README.md`](linux/usbip-dialin/README.md),
+  "Authentication"). The key is typed in once and kept in the Android
+  Keystore (StrongBox where the phone has it). It works only for 1 hour
+  after a fingerprint, and only while the phone is unlocked; enrolling a
+  new fingerprint invalidates it. The app opens behind a fingerprint
+  prompt. When the hour is over, connections already up stay up; new ones
+  wait for the next fingerprint, and a notification says so. With no key,
+  the app does not dial. The key needs Android 11 or later, so dial-out
+  does not work on Android 9 or 10. The app does not encrypt the
+  connection: that is the VPN's job.
+- **Loopback-only listening**, on by default: the server binds `127.0.0.1`,
+  so other devices on the same network cannot reach it. The server accepts
+  only the app's own dial-out connections from the phone itself, so
+  `adb forward` and other local clients on the phone are refused, with
+  loopback-only on or off.
+- **No camera or microphone.** The CAMERA permission and the UVC camera
+  path are removed, so a video-class device cannot be shared; RECORD_AUDIO
+  is never requested. CI (Build Check) checks the APK's permissions
+  against a list.
+- **App data kept on the phone:** excluded from backups and from
+  device-to-device transfer.
+- A partial wake lock whenever dial-out is active, including while it is
+  retrying or waiting for a fingerprint: from the first shared device until
+  dial-out is turned off, the server stops or nothing is shared.
+- Its own application ID, `io.github.brackenjoe.usbipdcpp`, so it installs
+  alongside the original app.
+
+Automatic re-binding of devices you shared before comes from upstream, since
+v0.0.11; the fork does not add its own.
+
+The host side is in [`linux/usbip-dialin/`](linux/usbip-dialin/README.md): a
+small service that accepts the phone's connection, checks the peer with
+`tailscale whois`, authenticates it, runs the standard USB/IP import flow on
+that connection and hands the socket to `vhci_hcd`.
+
+Tested on a Galaxy S25 (Android 17), sharing an ArduPilot flight controller
+with a Linux 6.8 host over Tailscale. With authentication on (home WiFi):
+the controller's 1301 parameters downloaded in about 9 s, and a parameter
+written and read back in about 2 s. After a controller reboot or a replug,
+once the phone was unlocked and Android's USB permission prompt accepted,
+upstream's re-binding shared it again and the app redialed and
+authenticated on its own. By design it does not dial while the phone is
+locked. With the first build, before
+authentication: 12 s for the parameters on mobile data, and the session
+stayed up through a 6 minute screen lock and a WiFi to mobile-data
+handover. Tested with one device at a time. The phone may show a dead
+connection as connected for up to about 2 h (Android's default TCP
+keepalive).
+
+Builds: pushes to `main` that change code build a debug APK in Actions
+(Build Check, under Artifacts). Each build is signed with a new throwaway
+debug key, so installing a newer build means uninstalling the older one
+first, which also deletes the key: type it in again.
+
+Licence: GPL-3.0, as upstream. This product uses usbipdcpp
+(https://github.com/yunsmall/usbipdcpp), licensed under LGPLv3.
+
+Everything below this section is upstream's README.
+
+
 📱🔌 An Android USB/IP server application for sharing USB devices over the network, based on [usbipdcpp](https://github.com/yunsmall/usbipdcpp), a dedicated library for developing USB/IP servers.
 
 ## ✨ Features
