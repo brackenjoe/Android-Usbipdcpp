@@ -4,6 +4,8 @@
 
 ## About this fork
 
+<img src="art/ic_launcher_readme.png" width="96" align="right" alt="The app's icon">
+
 This is a fork of [yunsmall/Android-Usbipdcpp](https://github.com/yunsmall/Android-Usbipdcpp),
 modified in October 2026 by brackenjoe. The upstream maintainer declined a
 dial-out mode as out of scope for a server
@@ -71,6 +73,19 @@ stayed up through a 6 minute screen lock and a WiFi to mobile-data
 handover. Tested with one device at a time. The phone may show a dead
 connection as connected for up to about 2 h (Android's default TCP
 keepalive).
+
+### In use
+
+<p>
+<img src="docs/images/in-use-phone-and-fc.jpg" width="65%" alt="The phone cabled to a 5 inch quadcopter">
+<img src="docs/images/in-use-app.jpg" width="30%" alt="The app: server on loopback, dial-out connected, the flight controller shared">
+</p>
+<img src="docs/images/in-use-host.png" width="100%" alt="The host reading the flight controller over USB/IP">
+
+A 5 inch quad's flight controller (TBS Lucid H7, ArduCopter 4.7.1) shared
+from the phone with dial-out connected. Below, the Linux host on that
+connection reading it over MAVLink: live attitude, the SD card's logs,
+and the newest log's battery voltage.
 
 Builds: pushes to `main` that change code build a debug APK in Actions
 (Build Check, under Artifacts). Each build is signed with a new throwaway
