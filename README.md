@@ -12,6 +12,14 @@ dial-out mode as out of scope for a server
 ([#2](https://github.com/yunsmall/Android-Usbipdcpp/issues/2)) and welcomed a
 fork; this fork adds it in the app only. The usbipdcpp library is unchanged.
 
+**Install:** download the APK from
+[Releases](https://github.com/brackenjoe/Android-Usbipdcpp/releases) and
+open it on the phone (Android asks once to allow installs from your browser
+or file manager). Releases are signed with one key, so each installs over
+the last. A release does not install over a Build Check build: uninstall
+that first, then type the key in again. The host side is set up as in
+[`linux/usbip-dialin/README.md`](linux/usbip-dialin/README.md), "Install".
+
 What the fork adds:
 
 - **Dial-out.** The app connects out to a host you name (host and port) and
@@ -87,10 +95,11 @@ from the phone with dial-out connected. Below, the Linux host on that
 connection reading it over MAVLink: live attitude, the SD card's logs,
 and the newest log's battery voltage.
 
-Builds: pushes to `main` that change code build a debug APK in Actions
-(Build Check, under Artifacts). Each build is signed with a new throwaway
-debug key, so installing a newer build means uninstalling the older one
-first, which also deletes the key: type it in again.
+Builds: pushes to `main` that change code also build a debug APK in Actions
+(Build Check, under Artifacts), for testing. Each of those is signed with a
+new throwaway key, so it installs only after the previous build is
+uninstalled, which also deletes the key: type it in again. Use Releases
+instead.
 
 Licence: GPL-3.0, as upstream. This product uses usbipdcpp
 (https://github.com/yunsmall/usbipdcpp), licensed under LGPLv3.

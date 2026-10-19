@@ -3,7 +3,8 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    # This fork's tags only (v0.0.11-dialout.1); upstream's v* tags never publish here
+    tags: ["v*-dialout.*"]
   workflow_dispatch:
 
 # 默认只读；只有最后的 publish 作业拿 contents: write
@@ -37,17 +38,21 @@ jobs:
             17
           distribution: 'temurin'
 
+      - name: 校验 Gradle wrapper jar
+        uses: gradle/actions/wrapper-validation@748248ddd2a24f49513d8f472f81c3a07d4d50e1 # v4.4.4
+
       - name: 提取版本号
         env:
           # tag 名由推送者决定：只经 env 传入，脚本里加引号使用
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
         run: |
-          if [ "$REF_TYPE" = "tag" ]; then
-            VERSION="${REF_NAME#v}"
-          else
-            VERSION="0.0.0-dev"
+          # Only a tag publishes: a manual run from a branch would sign a dev build
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::run this workflow on a release tag (v<version>-dialout.<n>), not a branch"
+            exit 1
           fi
+          VERSION="${REF_NAME#v}"
           # 版本号会写进 GITHUB_ENV、文件名和 Gradle 参数：只放行普通字符
           if ! printf '%s' "$VERSION" | grep -Eq '^[0-9A-Za-z._+-]+$'; then
             echo "::error::版本号含不允许的字符: $VERSION"
@@ -110,7 +115,8 @@ jobs:
             echo "KEYSTORE_PATH=$RUNNER_TEMP/keystore.jks" >> "$GITHUB_ENV"
             echo "keystore 已解码"
           else
-            echo "未配置 KEYSTORE_BASE64：release APK 不会签名（app-release-unsigned.apk）"
+            echo "::error::KEYSTORE_BASE64 is not set: a release must be signed"
+            exit 1
           fi
 
       - name: 安装构建工具（vcpkg libusb 需要 autotools）
@@ -123,7 +129,9 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug assembleRelease -PversionName="$APP_VERSION"
+          # versionCode: this workflow's run number only grows (it is counted per
+          # workflow file: do not rename release.yml), so each release installs over the last
+          ./gradlew assembleRelease -PversionName="$APP_VERSION" -PversionCode="$GITHUB_RUN_NUMBER"
 
       - name: 删除 keystore
         if: always()
@@ -132,20 +140,23 @@ jobs:
       - name: 重命名 APK
         run: |
           mkdir -p apks
-          cp app/build/outputs/apk/debug/app-debug.apk "apks/usbipdcpp-v${APP_VERSION}-debug.apk"
-          # 没配签名时 AGP 产出的是 app-release-unsigned.apk，不是 app-release.apk
+          # Only a signed release APK is published: an unsigned one cannot be
+          # installed, and a debug one has a new key on every build
           release_dir=app/build/outputs/apk/release
           if [ -f "$release_dir/app-release.apk" ]; then
-            cp "$release_dir/app-release.apk" "apks/usbipdcpp-v${APP_VERSION}-release.apk"
+            cp "$release_dir/app-release.apk" "apks/usb-ip-dialout-v${APP_VERSION}.apk"
           elif [ -f "$release_dir/app-release-unsigned.apk" ]; then
-            echo "::warning::release APK 未签名（没有配置 keystore），文件名带 -unsigned，无法直接安装"
-            cp "$release_dir/app-release-unsigned.apk" "apks/usbipdcpp-v${APP_VERSION}-release-unsigned.apk"
+            echo "::error::the release APK is unsigned: set KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS and KEY_PASSWORD"
+            exit 1
           else
             echo "::error::$release_dir 下没有 release APK"
             ls -l "$release_dir"
             exit 1
           fi
           ls -lh apks/
+
+      - name: 校验 APK 权限白名单
+        run: bash .github/scripts/check-permissions.sh apks/*.apk
 
       - name: 上传 artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

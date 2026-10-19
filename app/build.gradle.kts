@@ -18,7 +18,8 @@ android {
         minSdk = 28
         targetSdk = 36
         versionCode = (project.findProperty("versionCode") as? String)?.toIntOrNull() ?: 1
-        versionName = ((project.findProperty("versionName") as? String) ?: "0.0.11") + "-dialout.1"
+        // The release workflow passes the whole name from the tag (v0.0.11-dialout.1 -> 0.0.11-dialout.1)
+        versionName = (project.findProperty("versionName") as? String) ?: "0.0.11-dialout.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
