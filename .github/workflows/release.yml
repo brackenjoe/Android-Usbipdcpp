@@ -186,5 +186,5 @@ jobs:
         with:
           files: apks/*.apk
           generate_release_notes: true
-          # 默认发布为 pre-release，验证没问题后手动改为正式 release
-          prerelease: true
+          # Fork: a full release, so GitHub's Latest and update trackers pick it up
+          prerelease: false
