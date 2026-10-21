@@ -4,7 +4,7 @@
 
 > **关于这个复刻**：这是 [yunsmall/Android-Usbipdcpp](https://github.com/yunsmall/Android-Usbipdcpp)
 > 的复刻（fork），2026 年 10 月由 brackenjoe 修改，增加了向主机拨出（连接前与主机双向认证，密钥存于 Android Keystore，指纹验证后 1 小时内可用）和仅监听回环地址，并去掉了相机权限。
-> 自动重新绑定曾共享的设备自上游 v0.0.11 起提供，本复刻没有自己的实现。usbipdcpp 库没有修改。详情见 [README.md](README.md) 的 "About this fork" 一节。
+> 插入设备时不弹出任何提示：点"绑定"共享设备，Android 每次插入会请求一次 USB 权限。上游 v0.0.11 起的"自动重新绑定曾共享的设备"在设置中，本复刻默认关闭。usbipdcpp 库没有修改。详情见 [README.md](README.md) 的 "About this fork" 一节。
 
 📱🔌 一个 Android USB/IP 服务端应用，通过网络共享 USB 设备，基于一个专门用于创建usbip服务器的库——[usbipdcpp](https://github.com/yunsmall/usbipdcpp)。
 

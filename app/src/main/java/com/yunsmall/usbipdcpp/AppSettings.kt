@@ -20,9 +20,9 @@ class AppSettings(context: Context) {
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    /** 曾共享过的设备重新插入时是否自动绑定；默认开启 */
+    /** 曾共享过的设备重新插入时是否自动绑定。Fork: off by default, so nothing is shared or asked for until Bind is tapped */
     var autoBindRememberedDevices: Boolean
-        get() = prefs.getBoolean(KEY_AUTO_BIND_REMEMBERED_DEVICES, true)
+        get() = prefs.getBoolean(KEY_AUTO_BIND_REMEMBERED_DEVICES, false)
         set(value) {
             prefs.edit().putBoolean(KEY_AUTO_BIND_REMEMBERED_DEVICES, value).apply()
         }

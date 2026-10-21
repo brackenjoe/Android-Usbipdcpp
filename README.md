@@ -60,8 +60,12 @@ What the fork adds:
 - Its own application ID, `io.github.brackenjoe.usbipdcpp`, so it installs
   alongside the original app.
 
-Automatic re-binding of devices you shared before comes from upstream, since
-v0.0.11; the fork does not add its own.
+**No prompt on plug-in.** With the default settings, plugging a device in
+opens nothing: share it by tapping Bind, and Android asks for USB
+permission once per plug-in. Upstream's automatic re-binding of devices
+you shared before (since v0.0.11) is under Settings, "Auto-bind previously
+shared devices", off by default in this fork; updating from an earlier
+build turns it off unless you had changed that switch.
 
 The host side is in [`linux/usbip-dialin/`](linux/usbip-dialin/README.md): a
 small service that accepts the phone's connection, checks the peer with
@@ -73,8 +77,8 @@ with a Linux 6.8 host over Tailscale. With authentication on (home WiFi):
 the controller's 1301 parameters downloaded in about 9 s, and a parameter
 written and read back in about 2 s. After a controller reboot or a replug,
 once the phone was unlocked and Android's USB permission prompt accepted,
-upstream's re-binding shared it again and the app redialed and
-authenticated on its own. By design it does not dial while the phone is
+upstream's re-binding (then on by default) shared it again and the app
+redialed and authenticated on its own. By design it does not dial while the phone is
 locked. With the first build, before
 authentication: 12 s for the parameters on mobile data, and the session
 stayed up through a 6 minute screen lock and a WiFi to mobile-data
