@@ -364,6 +364,17 @@ attach the phone's devices; the fork listens on `127.0.0.1` only by default. Wit
 loop running but no server on the phone, each dial shows as a `peer closed
 after 0 of 8 bytes` line, about once a second.
 
+## In use
+
+On 2026-10-22 an ArduPlane aircraft was tuned over this in three flights
+in one morning, with the phone as the only thing on the flight
+controller. The host side was a Claude Code session, driven by Remote
+Control from the Claude app on that same phone. Between flights the
+session pulled the log over the attached serial device and, on the
+pilot's yes, wrote the next parameters. The tools used, their MAVFTP
+throughput over the link and how they cope with its buffering are in
+[drone-tools](https://github.com/brackenjoe/drone-tools#over-usbip-from-a-phone).
+
 ## Limits
 
 - One device per connection: an imported connection stays open. The fork's
@@ -371,7 +382,8 @@ after 0 of 8 bytes` line, about once a second.
 - No firmware flashing. A board that re-enumerates as its bootloader drops the
   attach, and Android asks for USB permission again.
 - No isochronous devices (cameras, audio) and no high-bandwidth ones over a
-  cellular link. Throughput was measured only on loopback, 3.7 to 5.4 MB/s.
+  cellular link. The service's own forwarding rate was measured only on
+  loopback, 3.7 to 5.4 MB/s.
 - The bus id changes when a device re-enumerates; a replugged device is found
   again from a new device list, not by remembering the old id.
 - Linux with `vhci_hcd` only, and Tailscale only: peer identity comes from
