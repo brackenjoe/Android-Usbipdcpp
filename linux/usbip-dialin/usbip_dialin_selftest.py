@@ -388,10 +388,15 @@ def closed_within(s, timeout):
     return False, time.monotonic() - t0, extra
 
 
+# The service under test listens here, apart from every fake peer's source
+# address: a peer at the listener's own address is refused as this host.
+SVC_HOST = '127.0.0.254'
+
+
 def raw_client(port, src='127.0.0.1'):
     s = socket.socket()
     s.bind((src, 0))
-    s.connect(('127.0.0.1', port))
+    s.connect((SVC_HOST, port))
     return s
 
 
@@ -545,7 +550,7 @@ n = int(open({cnt!r}).read() or 0) if os.path.exists({cnt!r}) else 0
 open({cnt!r}, 'w').write(str(n + 1))
 if n < 2:
     sys.stderr.write("no address yet\\n"); sys.exit(1)
-print("127.0.0.1")
+print("127.0.0.254")
 '''
 
 
@@ -576,7 +581,7 @@ class Run:
         port = free_port()
         args = ['--allow-user', self.a.user, '--whois-cmd', f'{self.whois} --json']
         if listen:
-            args += ['--listen', f'127.0.0.1:{port}']
+            args += ['--listen', f'{SVC_HOST}:{port}']
         s = Svc(self.tmp, name, *args, *extra)
         s.port = port
         self.svcs.append(s)
@@ -584,7 +589,7 @@ class Run:
 
     def dial(self, svc, src='127.0.0.1', mock_port=None):
         p = subprocess.Popen([sys.executable, os.path.abspath(__file__), '--dialer', src,
-                              f'127.0.0.1:{svc.port}', str(mock_port or self.mock_port)],
+                              f'{SVC_HOST}:{svc.port}', str(mock_port or self.mock_port)],
                              stdin=subprocess.DEVNULL)
         self.dialers.append(p)
         return p
@@ -701,7 +706,7 @@ class Run:
         for d in ds:
             kill_pid(d)
         extra = [('127.0.0.5', 'not JSON'), ('127.0.0.6', 'UserProfile object'),
-                 ('127.0.0.7', 'not null or a list')]
+                 ('127.0.0.7', 'not null or a list'), (SVC_HOST, 'peer is this host')]
         for src, why in cases + extra:
             s = raw_client(S.port, src)
             n1 = S.count()
@@ -714,6 +719,8 @@ class Run:
         ok(all(any(l.startswith(ip + ' --json') for l in asked) for ip in
                ('127.0.0.2', '127.0.0.3', '127.0.0.4', '127.0.0.5', '127.0.0.6', '127.0.0.7')),
            'whois ran with the peer IP last and its own arguments first (--json)')
+        ok(not any(l.startswith(SVC_HOST + ' ') for l in asked),
+           'a peer at the listener\'s own address is refused before whois runs')
         ok(not [e for e in S.events()[n0:] if e['ev'] in ('attach', 'import', 'list')],
            'no list, import or attach for any refused peer')
         for src, what in (('127.0.0.8', 'Tags null'), ('127.0.0.9', 'Tags []')):
@@ -1041,11 +1048,11 @@ class Run:
     def check6(self):
         print('== 6. bind retry', flush=True)
         holder = socket.socket()
-        holder.bind(('127.0.0.1', 0))
+        holder.bind((SVC_HOST, 0))
         holder.listen(1)
         port = holder.getsockname()[1]
         S = Svc(self.tmp, 'retry', '--allow-user', self.a.user, '--whois-cmd', self.whois,
-                '--listen', f'127.0.0.1:{port}')
+                '--listen', f'{SVC_HOST}:{port}')
         S.port = port
         self.svcs.append(S)
         S.start()
@@ -1078,7 +1085,7 @@ class Run:
         e = S.wait_ev(lambda e: e['ev'] == 'bind_retry', 8)
         ok(e is not None and 'no address' in e['msg'], f'the address command failing is retried: {e and e["msg"]!r}')
         e = S.wait_ev(lambda e: e['ev'] == 'listening', 10)
-        ok(e is not None and e['addr'] == '127.0.0.1' and e['port'] == port,
+        ok(e is not None and e['addr'] == SVC_HOST and e['port'] == port,
            f'then it listens on the address the command printed: {e and (e["addr"], e["port"])}')
         if e:
             n0 = S.count()
@@ -1166,7 +1173,7 @@ def main():
         S = R.svc('main', '--timeout', '2')
         st = S.start()
         ok(st is not None and bool(S.wait_ev(lambda e: e['ev'] == 'listening', 10)),
-           f'service up on 127.0.0.1:{S.port} as pid {S.pid} (sudo -n)')
+           f'service up on {SVC_HOST}:{S.port} as pid {S.pid} (sudo -n)')
         for name in ('check1', 'check2', 'check3', 'check4', 'check10', 'check12', 'check11'):
             try:
                 getattr(R, name)(S)

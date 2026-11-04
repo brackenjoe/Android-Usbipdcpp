@@ -26,7 +26,9 @@ An interface is denied if either layer says so:
      (modules.alias for loadable modules, modules.builtin.modinfo for built-in
      ones). Each candidate module is placed by modules.dep / modules.builtin; any
      candidate under DENY_DIRS (hid, input, net, bluetooth, staging, kernel/net,
-     and sound for now) or with no known path denies the interface. A modules
+     media/rc, and sound for now), or depending on a DENY_DEPS module (rc-core:
+     remote-control receivers inside TV tuners), or with no known path denies
+     the interface. A modules
      file that is missing or unreadable denies everything (fail closed).
 An interface with no candidate driver is authorized and not probed: userspace
 libusb tools (an SDR) need it authorized to claim it. A malformed or unreadable
@@ -75,7 +77,11 @@ DENY_DIRS = (
     'kernel/drivers/bluetooth/',
     'kernel/drivers/staging/',
     'kernel/net/',
+    'kernel/drivers/media/rc/',     # IR receivers register input devices through rc-core
 )
+# A candidate that depends on one of these modules (modules.dep, normalised names)
+# denies the interface; rc-core turns remote-control receivers, standalone or inside TV tuners, into input devices.
+DENY_DEPS = ('rc_core',)
 
 MARKER_DIR = '/run/usbip-authorize'      # --marker-dir overrides it, for tests only
 
@@ -181,11 +187,12 @@ class Modules:
     def __init__(self, directory):
         self.aliases = []       # (usb: glob, module)
         self.paths = {}         # module -> [kernel/... path]
+        self.deps = {}          # module -> {normalised dependency module names}
         self.error = None
         try:
             self._load(directory)
         except (OSError, ValueError) as e:
-            self.aliases, self.paths = [], {}
+            self.aliases, self.paths, self.deps = [], {}, {}
             self.error = '%s: %s' % (getattr(e, 'filename', None) or directory,
                                      errno.errorcode.get(getattr(e, 'errno', 0) or 0, str(e)))
 
@@ -202,7 +209,18 @@ class Modules:
             if eq and key.endswith('.alias') and val.startswith('usb:'):
                 self.aliases.append((val, norm(key[:-len('.alias')])))
         # modules.dep: "<path>.ko[.zst]: deps"; modules.builtin: "<path>.ko"
-        paths = [l.partition(':')[0].strip() for l in text['modules.dep'].splitlines()]
+        paths = []
+        for l in text['modules.dep'].splitlines():
+            path, _, deps = l.partition(':')
+            path = path.strip()
+            paths.append(path)
+            m = KO_RE.fullmatch(os.path.basename(path))
+            if m:
+                found = self.deps.setdefault(norm(m.group(1)), set())
+                for dp in deps.split():
+                    dm = KO_RE.fullmatch(os.path.basename(dp))
+                    if dm:
+                        found.add(norm(dm.group(1)))
         paths += [l.strip() for l in text['modules.builtin'].splitlines()]
         for p in paths:
             m = KO_RE.fullmatch(os.path.basename(p))
@@ -225,6 +243,9 @@ class Modules:
             for d in INTERIM_DENY_DIRS:
                 if p.startswith(d):
                     return '%s under %s (interim)' % (module, d)
+        for d in DENY_DEPS:
+            if d in self.deps.get(module, ()):
+                return '%s depends on %s' % (module, d.replace('_', '-'))
         return None
 
 

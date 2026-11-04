@@ -720,9 +720,11 @@ class HandleTests(Base):
         self.srv.listen(4)
         self.addCleanup(self.srv.close)
 
-    def connect(self):
-        """(client socket, handler thread) for one handle() run on the accepted end."""
-        c = socket.create_connection(self.srv.getsockname())
+    def connect(self, source='127.0.0.2'):
+        """(client socket, handler thread) for one handle() run on the accepted end.
+        The client dials from another loopback address: from the listener's own
+        address it is refused as this host."""
+        c = socket.create_connection(self.srv.getsockname(), source_address=(source, 0))
         conn, addr = self.srv.accept()
         self.st.active = 1
         t = threading.Thread(target=M.handle, args=(self.args, self.st, conn, addr), daemon=True)
@@ -746,6 +748,15 @@ class HandleTests(Base):
         r = self.events.of('refuse')[0]
         self.assertEqual((r['node'], r['stable_id']), ('pixel', 'nSTABLE1CNTRL'))
         self.assertEqual(r['reason'], 'node nSTABLE1CNTRL not in --allow-node')
+
+    def test_peer_at_own_address_refused_before_whois(self):
+        c, t = self.connect(source='127.0.0.1')
+        self.assertEqual(read_until_eof(c), b'')
+        t.join(5)
+        r = self.events.of('refuse')[0]
+        self.assertEqual(r['reason'], 'peer is this host')
+        self.assertNotIn('node', r)                      # refused before whois ran
+        self.assertEqual(self.events.of('allow'), [])
 
     def test_psk_good_then_devlist(self):
         self.args.auth_key = KEY

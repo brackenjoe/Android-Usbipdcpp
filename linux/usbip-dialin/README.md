@@ -64,8 +64,10 @@ ADDR:PORT`, else the address `tailscale ip -4` prints, port 3241 or `--port`).
 A failed bind, for example before `tailscale0` has an address, is retried every
 2 s and is not fatal.
 
-Every accepted peer goes through `tailscale whois --json <peer ip>`. It is
-allowed only if
+A peer whose address is the listener's own is refused first: a local process
+dialing the host's tailnet address arrives from that address, and whois would
+name this host. Every other accepted peer goes through
+`tailscale whois --json <peer ip>`. It is allowed only if
 
 - the node is **untagged** (`Node.Tags` absent, null or empty; on real
   Tailscale an untagged node has no `Tags` key at all), and
@@ -130,18 +132,23 @@ device's `bind` event, `usbip_authorize.py` decides each interface:
 - **By driver:** it resolves which drivers would bind, by matching the
   interface's `modalias` against the kernel's own `modules.alias` and
   `modules.builtin.modinfo`. If any of them lives under `drivers/hid`,
-  `drivers/input`, `drivers/net`, `drivers/bluetooth`, `drivers/staging` or
-  `net/`, or has no known path, the interface is denied. This catches
-  network adapters and gamepads that declare a vendor class and are
-  matched by vendor and product ID.
+  `drivers/input`, `drivers/net`, `drivers/bluetooth`, `drivers/staging`,
+  `drivers/media/rc` or `net/`, or has no known path, the interface is
+  denied. So is one that depends on `rc-core` in `modules.dep`: remote-control
+  receivers, standalone or inside a TV tuner, register input devices. This
+  catches network adapters, gamepads and IR receivers that declare a vendor
+  class and are matched by vendor and product ID. The cost, on Linux 6.8:
+  DVB TV sticks, hybrid analog/DVB tuners (`au0828`, `cx231xx`) and RTL-SDR
+  dongles (`dvb_usb_rtl28xxu`) are denied too. Plain analog capture devices
+  (`em28xx`, `usbtv`, `stk1160`) and webcams are not.
 - **By class, as a second layer:** HID (03), wireless controllers (e0),
   CDC communication interfaces other than ACM, and RNDIS are denied.
 - **Audio, for now:** class 01 and `sound/` drivers are denied until the
   running kernel has the fixes for two usb-audio out-of-bounds writes
   (`INTERIM_DENY_CLASSES`, `INTERIM_DENY_DIRS`).
 
-Everything else (serial, storage, cameras and other media, vendor devices
-driven from userspace) is authorised. Then each authorised interface that
+Everything else (serial, storage, cameras and capture devices whose driver
+does not use rc-core, vendor devices driven from userspace) is authorised. Then each authorised interface that
 has a driver is probed. If the module tables cannot be read, every
 interface is denied. Linux v6.8 references are in the helper's docstring.
 The service refuses to import (`refuse_import`) unless every vhci root hub

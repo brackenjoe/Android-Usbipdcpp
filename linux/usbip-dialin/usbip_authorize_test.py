@@ -43,6 +43,9 @@ MODULES_ALIAS = '\n'.join([
     'alias usb:vDEADpBEEF%sic*isc*ip*in* ghost' % ANY,
     'alias pci:v000010ECd00008168sv*sd*bc*sc*i* r8169',
     'alias usb:v1234p5678%sicFFisc*ip*in* hid-quirk' % ANY,
+    'alias usb:v1784p0001%sicFFisc*ip*in* mceusb' % ANY,
+    'alias usb:v0BDAp2838%sicFFisc*ip*in* dvb_usb_rtl28xxu' % ANY,
+    'alias usb:v1D50p6666%sicFFisc*ip*in* fakebox' % ANY,
     '',
 ])
 MODULES_BUILTIN_MODINFO = '\0'.join([
@@ -61,6 +64,11 @@ MODULES_DEP = '\n'.join([
     'kernel/drivers/bluetooth/btusb.ko.zst:',
     'kernel/drivers/net/usb/cdc_ether.ko.zst:',
     'kernel/drivers/net/usb/rndis_host.ko.zst:',
+    'kernel/drivers/media/rc/rc-core.ko.zst:',
+    'kernel/drivers/media/rc/mceusb.ko.zst: kernel/drivers/media/rc/rc-core.ko.zst',
+    'kernel/drivers/media/usb/dvb-usb-v2/dvb-usb-rtl28xxu.ko.zst: '
+    'kernel/drivers/media/usb/dvb-usb-v2/dvb_usb_v2.ko.zst kernel/drivers/media/rc/rc-core.ko.zst',
+    'kernel/drivers/usb/misc/fakebox.ko.zst: kernel/drivers/media/rc/rc-core.ko.zst',
     '',
 ])
 MODULES_BUILTIN = '\n'.join([
@@ -249,6 +257,31 @@ class Classification(Base):
         self.assertEqual(self.iface(rec, '5-1:1.0')['candidates'], ['uvcvideo'])
         self.assertIn('5-1:1.0', self.probe_writes())
 
+    def test_ir_receiver_denied(self):
+        _, rec = self.check('1784', '0001', [('ff', '00', '00')])
+        i = self.iface(rec, '5-1:1.0')
+        self.assertEqual(i['candidates'], ['mceusb'])
+        self.assertEqual(i['decision'], 'deny')
+        self.assertIn('media/rc', i['why'])     # the path layer wins first
+        self.assertNoWrites()
+
+    def test_tv_tuner_with_remote_denied_by_rc_core_dependency(self):
+        _, rec = self.check('0bda', '2838', [('ff', '00', '00')])
+        i = self.iface(rec, '5-1:1.0')
+        self.assertEqual(i['candidates'], ['dvb_usb_rtl28xxu'])
+        self.assertEqual(i['decision'], 'deny')
+        self.assertIn('depends on rc-core', i['why'])
+        self.assertNoWrites()
+
+    def test_rc_dependency_alone_denies(self):
+        # Outside media/: only the modules.dep dependency says no.
+        _, rec = self.check('1d50', '6666', [('ff', '00', '00')])
+        i = self.iface(rec, '5-1:1.0')
+        self.assertEqual(i['candidates'], ['fakebox'])
+        self.assertEqual(i['decision'], 'deny')
+        self.assertEqual(i['why'], 'fakebox depends on rc-core')
+        self.assertNoWrites()
+
     def test_audio_denied_interim(self):
         _, rec = self.check('0d8c', '0014', [('01', '01', '00')])
         i = self.iface(rec, '5-1:1.0')
@@ -400,6 +433,19 @@ class ModulesTables(unittest.TestCase):
             self.assertEqual(m.paths['usb_storage'],
                              ['kernel/drivers/usb/storage/usb-storage.ko.zst'])
 
+    def test_deps_normalised(self):
+        with tempfile.TemporaryDirectory() as td:
+            make_modules(td)
+            with open(os.path.join(td, 'modules.dep'), 'a') as f:
+                f.write('kernel/drivers/a/x-y.ko.xz: kernel/drivers/b/dep-one.ko.zst '
+                        'kernel/drivers/c/two.ko\n')
+            m = ua.Modules(td)
+            self.assertEqual(m.deps['x_y'], {'dep_one', 'two'})
+            self.assertEqual(m.deps['cdc_acm'], set())
+            self.assertEqual(m.deps['mceusb'], {'rc_core'})
+            self.assertEqual(m.deps['uvcvideo'], {'mc'})
+            self.assertNotIn('usbhid', m.deps)      # built-in: no deps recorded
+
     def test_only_usb_aliases_kept(self):
         with tempfile.TemporaryDirectory() as td:
             make_modules(td)
@@ -415,6 +461,7 @@ class ModulesTables(unittest.TestCase):
                 m = ua.Modules(td)
             self.assertIsNotNone(m.error)
             self.assertEqual(m.aliases, [])
+            self.assertEqual(m.deps, {})
 
 
 class FailClosed(Base):

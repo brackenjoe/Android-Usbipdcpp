@@ -577,6 +577,11 @@ def handle(args, st, conn, addr):
     ip, sport = addr[0], addr[1]
     try:
         log('accept', peer=ip, sport=sport)
+        # A local process dialing the listener's own address arrives with that
+        # address as its source, and whois would name this host's node.
+        if ip == conn.getsockname()[0]:
+            log('refuse', peer=ip, reason='peer is this host')
+            return
         login, info, why = whois_check(args, ip)
         if why:
             log('refuse', peer=ip, reason=why, **(info or {}))
