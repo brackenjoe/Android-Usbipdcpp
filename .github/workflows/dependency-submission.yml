@@ -50,3 +50,9 @@ jobs:
 
       - name: Submit dependency graph
         uses: gradle/actions/dependency-submission@748248ddd2a24f49513d8f472f81c3a07d4d50e1 # v4.4.4
+        with:
+          # Report only what ships in the APK. Without this the graph also
+          # carries the build tools' own classpath (the Android and Kotlin
+          # Gradle plugins and what they pull in), and every advisory on
+          # those raises an alert no manifest line here can fix.
+          dependency-graph-include-configurations: 'releaseRuntimeClasspath'
