@@ -72,8 +72,12 @@ class MainActivity : AppCompatActivity() {
     // biometric passes, at launch and again after every trip to the background
     // (onStop sets it, onStart asks). No device-credential fallback and no
     // CryptoObject: the passing prompt opens the dial key's time window
-    // (DialInKey.KEY_AUTH_WINDOW_S), which is what the key needs. Not saved
-    // across process death on purpose: a restart is locked
+    // (DialInKey.KEY_AUTH_WINDOW_S), which is what the key needs. That window
+    // is system-wide: any strong-biometric authentication on the phone opens
+    // it (the Keystore guide, "Require user authentication for key use"; the
+    // lock screen's fingerprint should too, not measured), so this gate
+    // locks the UI, not the key. Not saved across process death on purpose: a restart is
+    // locked
     private var locked by mutableStateOf(true)
     private var lockMessage by mutableStateOf<String?>(null)
     private var promptActive = false

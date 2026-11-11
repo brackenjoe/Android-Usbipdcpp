@@ -38,8 +38,12 @@ What the fork adds:
   Keystore (StrongBox where the phone has it). It works only for 1 hour
   after a fingerprint, and only while the phone is unlocked; enrolling a
   new fingerprint invalidates it. The app opens behind a fingerprint
-  prompt. When the hour is over, connections already up stay up; new ones
-  wait for the next fingerprint, and a notification says so. With no key,
+  prompt. That prompt locks the app's screen, not the key: by Android's
+  Keystore documentation any strong-biometric authentication on the
+  phone opens the hour, another app's prompt included, and so should
+  the lock screen's fingerprint (not measured on the phone). When the
+  hour is over, connections already up stay up; new ones wait for the
+  next fingerprint, and a notification says so. With no key,
   the app does not dial. The key needs Android 11 or later, so dial-out
   does not work on Android 9 or 10. The app does not encrypt the
   connection: that is the VPN's job.
