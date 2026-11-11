@@ -143,9 +143,18 @@ device's `bind` event, `usbip_authorize.py` decides each interface:
   (`em28xx`, `usbtv`, `stk1160`) and webcams are not.
 - **By class, as a second layer:** HID (03), wireless controllers (e0),
   CDC communication interfaces other than ACM, and RNDIS are denied.
-- **Audio, for now:** class 01 and `sound/` drivers are denied until the
-  running kernel has the fixes for two usb-audio out-of-bounds writes
-  (`INTERIM_DENY_CLASSES`, `INTERIM_DENY_DIRS`).
+- **Audio:** class 01 and `sound/` drivers are denied, permanently
+  (`INTERIM_DENY_CLASSES`, `INTERIM_DENY_DIRS`). The deny began as a stopgap
+  for two out-of-bounds writes in USB audio drivers: CVE-2026-98265
+  (`snd-usb-audio`, upstream `76a986c980bb`) and CVE-2026-98312
+  (`snd-usb-6fire`, upstream `1589afe2d099`), both in 7.3-rc4; Ubuntu noble
+  ships them in `linux` 6.8.0-149.149 (USN-9022-1). It stays after the fix
+  for two reasons: audio is out of scope for this service, and allowing
+  `sound/` would also admit `snd-usb-caiaq`, which registers input devices
+  on Ubuntu's 6.8 config (`CONFIG_SND_USB_CAIAQ_INPUT=y`) and matches by
+  vendor ID, so the class deny would not catch it. The `INTERIM_` names, the
+  code comment saying to remove them, and the "interim" in the log reasons
+  are out of date; the deny is not to be lifted.
 
 Everything else (serial, storage, cameras and capture devices whose driver
 does not use rc-core, vendor devices driven from userspace) is authorised. Then each authorised interface that
