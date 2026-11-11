@@ -23,7 +23,8 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * K is imported once, as an HMAC-SHA256 key that works only for
  * [KEY_AUTH_WINDOW_S] seconds after a strong-biometric authentication
- * (BiometricPrompt, BIOMETRIC_STRONG) and only while the device is unlocked.
+ * (BIOMETRIC_STRONG: any on the device, not only this app's
+ * BiometricPrompt) and only while the device is unlocked.
  * The raw bytes are zeroed after the import and are kept nowhere else: not in
  * SharedPreferences, not in a log. Nothing here can read K back; the app gets
  * an initialised [Mac] and nothing more.

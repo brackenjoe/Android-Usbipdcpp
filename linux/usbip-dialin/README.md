@@ -359,9 +359,11 @@ once (Authentication above), turn on Dial-out, enter the host's tailnet
 address and port 3241, start the server and share the device. It opens one
 connection per shared device, only over a VPN network, runs the
 authentication, and only then opens its own USB/IP server on `127.0.0.1`
-and forwards between the two. After the fingerprint the key works for one
+and forwards between the two. After a fingerprint the key works for one
 hour; a connection that is already up stays up after that, and a new one
-waits for the next fingerprint. A new connection also waits while the phone
+waits for the next fingerprint. Any strong-biometric authentication on the
+phone starts that hour, not only the app's own prompt (the fork's README,
+"Authentication, both ways"). A new connection also waits while the phone
 is locked, even inside the hour.
 
 With upstream's unmodified app (tested at v0.0.10), a dial loop in Termux
